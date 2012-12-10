@@ -1,7 +1,7 @@
 # encoding: UTF-8
 #
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ++
-
-require 'bson/version'
 
 module BSON
   if defined? Mongo::DEFAULT_MAX_BSON_SIZE
@@ -85,6 +83,14 @@ else
       warn "  bson_ext gem is in your load path and that the bson_ext and mongo gems are of the same version.\n"
     end
   end
+end
+
+require 'active_support'
+begin
+  require 'active_support/hash_with_indifferent_access'
+rescue LoadError
+  # For ActiveSupport 2
+  require 'active_support/core_ext/hash/indifferent_access'
 end
 
 require 'bson/types/binary'

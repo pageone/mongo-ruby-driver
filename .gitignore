@@ -1,8 +1,6 @@
-html
-pkg
-doc
-ydoc
+docs
 .yardoc
+coverage
 *.gem
 nbproject
 *.bundle
@@ -11,7 +9,7 @@ nbproject
 ext/cbson/Makefile
 lib/mongo_ext/Makefile
 lib/bson_ext
-benchmark
+tasks/benchmark/exp_series_suite_*.js
 *~
 *#*
 *.class
@@ -25,4 +23,5 @@ test/tools/data/
 Gemfile.lock
 .idea/*
 tmp
-
+data
+.DS_Store

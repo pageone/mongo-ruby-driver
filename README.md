@@ -1,9 +1,12 @@
-[![Build Status][travis-img]][travis-url] [![Code Climate][codeclimate-img]][codeclimate-url]
+[![Build Status][travis-img]][travis-url] [![Jenkins Status][jenkins-img]][jenkins-url] [![Code Climate][codeclimate-img]][codeclimate-url]
 
 [travis-img]: https://secure.travis-ci.org/mongodb/mongo-ruby-driver.png
 [travis-url]: http://travis-ci.org/mongodb/mongo-ruby-driver
 [codeclimate-img]: https://codeclimate.com/badge.png
 [codeclimate-url]: https://codeclimate.com/github/mongodb/mongo-ruby-driver
+[jenkins-img]: https://jenkins.10gen.com/job/mongo-ruby-driver/badge/icon
+[jenkins-url]: https://jenkins.10gen.com/job/mongo-ruby-driver/
+[api-url]: http://api.mongodb.org/ruby/current
 
 # Documentation
 
@@ -15,103 +18,84 @@ has a link to API Documentation for the current release.
 
 If you have the source, you can generate the matching documentation  by typing
 
-    $ rake ydoc
+    $ rake docs
 
-Then open the file ydoc/index.html in your browser.
+Once generated, the API documentation can be found in the docs/ folder.
 
 # Introduction
 
 This is the 10gen-supported Ruby driver for [MongoDB](http://www.mongodb.org).
 
-For the reference manual, use the links in the upper-left and upper-right corners for quick navigation to the following.
+For the api reference please see the [API][api-url]
 
-* [Alphabetic Index](_index.html)
-* [Class List](class_list.html)
-* [Method List](method_list.html)
-* [File List](file_list.html)
+The [wiki](https://github.com/mongodb/mongo-ruby-driver/wiki) has other articles of interest, including:
 
-This documentation has other articles of interest, including:
+1. [A tutorial](https://github.com/mongodb/mongo-ruby-driver/wiki/Tutorial).
+2. [Replica Sets in Ruby](https://github.com/mongodb/mongo-ruby-driver/wiki/Replica-Sets).
+3. [Write Concern in Ruby](https://github.com/mongodb/mongo-ruby-driver/wiki/Write-Concern).
+4. [Tailable Cursors in Ruby](https://github.com/mongodb/mongo-ruby-driver/wiki/Tailable-Cursors).
+5. [Read Preference in Ruby](https://github.com/mongodb/mongo-ruby-driver/wiki/Read-Preference).
+6. [GridFS in Ruby](https://github.com/mongodb/mongo-ruby-driver/wiki/GridFS).
+7. [Frequently Asked Questions](https://github.com/mongodb/mongo-ruby-driver/wiki/FAQ).
+8. [History](https://github.com/mongodb/mongo-ruby-driver/wiki/History).
+9. [Release plan](https://github.com/mongodb/mongo-ruby-driver/wiki/Releases).
+10. [Credits](https://github.com/mongodb/mongo-ruby-driver/wiki/Credits).
 
-1. [A tutorial](file.TUTORIAL.html).
-2. [Replica Sets in Ruby](file.REPLICA_SETS.html).
-3. [Write Concern in Ruby](file.WRITE_CONCERN.html).
-4. [Tailable Cursors in Ruby](file.TAILABLE_CURSORS.html).
-5. [Read Preference in Ruby](file.READ_PREFERENCE.html).
-6. [GridFS in Ruby](file.GRID_FS.html).
-7. [Frequently Asked Questions](file.FAQ.html).
-8. [History](file.HISTORY.html).
-9. [Release plan](file.RELEASES.html).
-10. [Credits](file.CREDITS.html).
+Here's a quick code sample. Again, see the [MongoDB Ruby Tutorial](https://github.com/mongodb/mongo-ruby-driver/wiki/Tutorial) for much more:
 
-Here's a quick code sample. Again, see the [MongoDB Ruby Tutorial](file.TUTORIAL.html)
-for much more:
+```ruby
+require 'rubygems'
+require 'mongo'
 
-    require 'rubygems'
-    require 'mongo'
+include Mongo
 
-    @conn = Mongo::Connection.new('localhost', 27017, :safe => true)
-    @db   = @conn['sample-db']
-    @coll = @db['test']
+@client = MongoClient.new('localhost', 27017)
+@db     = @client['sample-db']
+@coll   = @db['test']
 
-    @coll.remove
-    3.times do |i|
-      @coll.insert({'a' => i+1})
-    end
+@coll.remove
 
-    puts "There are #{@coll.count} records. Here they are:"
-    @coll.find.each { |doc| puts doc.inspect }
+3.times do |i|
+  @coll.insert({'a' => i+1})
+end
+
+puts "There are #{@coll.count} records. Here they are:"
+@coll.find.each { |doc| puts doc.inspect }
+```
 
 # Installation
 
 ### Ruby Versions
 
-The driver works and is consistently tested on Ruby 1.8.7 and 1.9.3 as well as JRuby 1.6.6.
+The driver works and is consistently tested on Ruby 1.8.7 and 1.9.3 as well as JRuby 1.6.x and 1.7.x.
 
-Note that if you're on 1.8.7, be sure that you're using a patchlevel >= 249. There
-are some IO bugs in earlier versions.
+Note that if you're on 1.8.7, be sure that you're using a patchlevel >= 249. There are some IO bugs in earlier versions.
 
 ### Gems
 
-The driver's gems are hosted at [Rubygems.org](http://rubygems.org). Make sure you're
-using the latest version of rubygems:
-
     $ gem update --system
-
-Then you can install the mongo gem as follows:
-
     $ gem install mongo
 
-The driver also requires the bson gem:
-
-    $ gem install bson
-
-And for a significant performance boost, you'll want to install the C extensions:
+For a significant performance boost, you'll want to install the C extension:
 
     $ gem install bson_ext
 
-Note that bson_ext isn't used with JRuby. Instead, some native Java extensions are bundled with the bson gem.
-If you ever need to modify these extensions, you can recompile with the following rake task:
+Note that bson_ext isn't used with JRuby. Instead, we use some native Java extensions are bundled with the bson gem. If you ever need to modify these extensions, you can recompile with the following rake task:
 
-    $ rake build:java
+    $ rake compile:jbson
 
 ### From the GitHub source
 
 The source code is available at http://github.com/mongodb/mongo-ruby-driver.
 You can either clone the git repository or download a tarball or zip file.
 Once you have the source, you can use it from wherever you downloaded it or
-you can install it as a gem from the source by typing
+you can install it as a gem from the source by typing:
 
-    $ rake gem:install
-
-To install the C extensions from source, type this instead:
-
-    $ rake gem:install_extensions
-
-That's all there is to it!
+    $ rake install
 
 # Examples
 
-For extensive examples, see the [MongoDB Ruby Tutorial](file.TUTORIAL.html).
+For extensive examples, see the [MongoDB Ruby Tutorial](https://github.com/mongodb/mongo-ruby-driver/wiki/Tutorial).
 
 Bundled with the driver are many examples, located in the "docs/examples" subdirectory. Samples include using
 the driver and using the GridFS class GridStore. MongoDB must be running for
@@ -140,19 +124,21 @@ features (metadata, content type, seek, tell, etc).
 
 Examples:
 
-      # Write a file on disk to the Grid
-      file = File.open('image.jpg')
-      grid = Mongo::Grid.new(db)
-      id   = grid.put(file)
+```ruby
+# Write a file on disk to the Grid
+file = File.open('image.jpg')
+grid = Mongo::Grid.new(db)
+id   = grid.put(file)
 
-      # Retrieve the file
-      file = grid.get(id)
-      file.read
+# Retrieve the file
+file = grid.get(id)
+file.read
 
-      # Get all the file's metata
-      file.filename
-      file.content_type
-      file.metadata
+# Get all the file's metata
+file.filename
+file.content_type
+file.metadata
+```
 
 # Notes
 
@@ -169,7 +155,9 @@ timeout for waiting for old connections to be released to the pool.
 
 To set up a pooled connection to a single MongoDB instance:
 
-    @conn = Connection.new("localhost", 27017, :safe => true, :pool_size => 5, :timeout => 5)
+```ruby
+  @client = MongoClient.new("localhost", 27017, :pool_size => 5, :timeout => 5)
+```
 
 Though the pooling architecture will undoubtedly evolve, it currently owes much credit
 to the connection pooling implementations in ActiveRecord and PyMongo.
@@ -182,13 +170,13 @@ of v1.3.0, the Ruby driver detects forking and reconnects automatically.
 
 ## Environment variable `MONGODB_URI`
 
-`Mongo::Connection.from_uri`, `Mongo::Connection.new` and `Mongo::ReplSetConnection.new` will use <code>ENV["MONGODB_URI"]</code> if no other args are provided.
+`Mongo::MongoClient.from_uri`, `Mongo::MongoClient.new` and `Mongo::MongoReplicaSetClient.new` will use <code>ENV["MONGODB_URI"]</code> if no other args are provided.
 
 The URI must fit this specification:
 
     mongodb://[username:password@]host1[:port1][,host2[:port2],...[,hostN[:portN]]][/[database][?options]]
 
-If the type of connection (direct or replica set) should be determined entirely from <code>ENV["MONGODB_URI"]</code>, you may want to use `Mongo::Connection.from_uri` because it will return either `Mongo::Connection` or a `Mongo::ReplSetConnection` depending on how many hosts are specified. Trying to use `Mongo::Connection.new` with multiple hosts in <code>ENV["MONGODB_URI"]</code> will raise an exception.
+If the type of connection (direct or replica set) should be determined entirely from <code>ENV["MONGODB_URI"]</code>, you may want to use `Mongo::MongoClient.from_uri` because it will return either `Mongo::MongoClient` or a `Mongo::MongoReplicaSetClient` depending on how many hosts are specified. Trying to use `Mongo::MongoClient.new` with multiple hosts in <code>ENV["MONGODB_URI"]</code> will raise an exception.
 
 ## String Encoding
 
@@ -218,9 +206,12 @@ generate _id values. If you want to control _id values or even their types,
 using a PK factory lets you do so.
 
 You can tell the Ruby Mongo driver how to create primary keys by passing in
-the :pk option to the Connection#db method.
+the :pk option to the MongoClient#db method.
 
-    db = Mongo::Connection.new('localhost', 27017, :safe => true).db('dbname', :pk => MyPKFactory.new)
+```ruby
+include Mongo
+db = MongoClient.new('localhost', 27017).db('dbname', :pk => MyPKFactory.new)
+```
 
 A primary key factory object must respond to :create_pk, which should
 take a hash and return a hash which merges the original hash with any
@@ -233,27 +224,28 @@ database.  The idea here is that whenever a record is inserted, the
 returned will be inserted.
 
 Here is a sample primary key factory, taken from the tests:
-
-    class TestPKFactory
-      def create_pk(row)
-        row['_id'] ||= BSON::ObjectId.new
-        row
-      end
-    end
-
+```ruby
+class TestPKFactory
+  def create_pk(doc)
+    doc['_id'] ||= BSON::ObjectId.new
+    doc
+  end
+end
+```
 Here's a slightly more sophisticated one that handles both symbol and string
 keys. This is the PKFactory that comes with the MongoRecord code (an
 ActiveRecord-like framework for non-Rails apps) and the AR Mongo adapter code
 (for Rails):
-
-    class PKFactory
-      def create_pk(row)
-        return row if row[:_id]
-        row.delete(:_id)      # in case it exists but the value is nil
-        row['_id'] ||= BSON::ObjectId.new
-        row
-      end
-    end
+```ruby
+class PKFactory
+  def create_pk(doc)
+    return doc if doc[:_id]
+    doc.delete(:_id)      # in case it exists but the value is nil
+    doc['_id'] ||= BSON::ObjectId.new
+    doc
+  end
+end
+```
 
 A database's PK factory object may be set either when a DB object is created
 or immediately after you obtain it, but only once. The only reason it is
@@ -273,11 +265,13 @@ completely harmless; strict mode is a programmer convenience only.
 To turn on strict mode, either pass in :strict => true when obtaining a DB
 object or call the `:strict=` method:
 
-    db = Connection.new('localhost', 27017, :safe => true).db('dbname', :strict => true)
-    # I'm feeling lax
-    db.strict = false
-    # No, I'm not!
-    db.strict = true
+```ruby
+db = MongoClient.new('localhost', 27017).db('dbname', :strict => true)
+# I'm feeling lax
+db.strict = false
+# No, I'm not!
+db.strict = true
+```
 
 The method DB#strict? returns the current value of that flag.
 
@@ -296,26 +290,21 @@ Notes:
 ## Socket timeouts
 
 The Ruby driver support timeouts on socket read operations. To enable them, set the
-`:op_timeout` option when you create a `Mongo::Connection` object.
+`:op_timeout` option when you create a `Mongo::MongoClient` object.
 
 If implementing higher-level timeouts, using tools like `Rack::Timeout`, it's very important
-to call `Mongo::Connection#close` to prevent the subsequent operation from receiving the previous
+to call `Mongo::MongoClient#close` to prevent the subsequent operation from receiving the previous
 request.
 
-### Test-Unit, Shoulda, and Mocha
-
-Running the test suite requires test-unit, shoulda, and mocha.  You can install them as follows:
-
-    $ gem install test-unit
-    $ gem install shoulda
-    $ gem install mocha
-
-The tests assume that the Mongo database is running on the default port. You
-can override the default host (localhost) and port (Connection::DEFAULT_PORT) by
-using the environment variables MONGO_RUBY_DRIVER_HOST and
-MONGO_RUBY_DRIVER_PORT.
-
 # Testing
+
+Before running the tests, make sure you install all test dependencies by running:
+
+    $ gem install bundler; bundle install
+
+To run all default test suites, just type:
+
+    $ rake test
 
 If you have the source code, you can run the tests.  Skip this test with the C extension if you're running JRuby.
 
@@ -336,7 +325,7 @@ To run any individual rake tasks with the C extension enabled, just pass C_EXT=t
 
 If you want to test replica set, you can run the following task:
 
-    $ rake test:rs
+    $ rake test:replica_set
 
 To run a single test at the top level, add -Itest since we no longer modify LOAD_PATH:
 
@@ -356,11 +345,12 @@ To fix the following error on Mac OS X - "/.../lib/bson_ext/cbson.bundle: [BUG] 
 
 # Release Notes
 
-See HISTORY.
+See [history](https://github.com/mongodb/mongo-ruby-driver/wiki/History).
+
 
 # Credits
 
-See CREDITS.
+See [credits](https://github.com/mongodb/mongo-ruby-driver/wiki/Credits).
 
 # License
 
@@ -370,7 +360,7 @@ See CREDITS.
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,

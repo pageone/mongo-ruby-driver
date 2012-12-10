@@ -1,7 +1,7 @@
 # encoding: UTF-8
 
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,50 +35,81 @@ module Mongo
     MONGODB_URI_SPEC = "mongodb://[username:password@]host1[:port1][,host2[:port2],...[,hostN[:portN]]][/[database][?options]]"
 
     SPEC_ATTRS = [:nodes, :auths]
-    OPT_ATTRS  = [:connect, :replicaset, :slaveok, :safe, :w, :wtimeout, :fsync, :journal, :connecttimeoutms, :sockettimeoutms, :wtimeoutms]
+
+    OPT_ATTRS  = [
+      :connect,
+      :replicaset,
+      :slaveok,
+      :safe,
+      :w,
+      :wtimeout,
+      :fsync,
+      :journal,
+      :connecttimeoutms,
+      :sockettimeoutms,
+      :wtimeoutms,
+      :pool_size
+    ]
 
     OPT_VALID  = {:connect          => lambda {|arg| ['direct', 'replicaset', 'true', 'false', true, false].include?(arg)},
                   :replicaset       => lambda {|arg| arg.length > 0},
                   :slaveok          => lambda {|arg| ['true', 'false'].include?(arg)},
                   :safe             => lambda {|arg| ['true', 'false'].include?(arg)},
-                  :w                => lambda {|arg| arg =~ /^\d+$/ },
+                  :w                => lambda {|arg| arg =~ /^\w+$/ },
                   :wtimeout         => lambda {|arg| arg =~ /^\d+$/ },
                   :fsync            => lambda {|arg| ['true', 'false'].include?(arg)},
                   :journal          => lambda {|arg| ['true', 'false'].include?(arg)},
                   :connecttimeoutms => lambda {|arg| arg =~ /^\d+$/ },
                   :sockettimeoutms  => lambda {|arg| arg =~ /^\d+$/ },
-                  :wtimeoutms       => lambda {|arg| arg =~ /^\d+$/ }
+                  :wtimeoutms       => lambda {|arg| arg =~ /^\d+$/ },
+                  :pool_size        => lambda {|arg| arg.to_i > 0 }
                  }
 
     OPT_ERR    = {:connect          => "must be 'direct', 'replicaset', 'true', or 'false'",
                   :replicaset       => "must be a string containing the name of the replica set to connect to",
                   :slaveok          => "must be 'true' or 'false'",
                   :safe             => "must be 'true' or 'false'",
-                  :w                => "must be an integer specifying number of nodes to replica to",
+                  :w                => "must be an integer indicating number of nodes to replicate to or a string specifying
+                                        that replication is required to the majority or nodes with a particilar getLastErrorMode.",
                   :wtimeout         => "must be an integer specifying milliseconds",
                   :fsync            => "must be 'true' or 'false'",
                   :journal          => "must be 'true' or 'false'",
                   :connecttimeoutms => "must be an integer specifying milliseconds",
                   :sockettimeoutms  => "must be an integer specifying milliseconds",
-                  :wtimeoutms       => "must be an integer specifying milliseconds"
+                  :wtimeoutms       => "must be an integer specifying milliseconds",
+                  :pool_size        => "must be an integer greater than zero"
                  }
 
     OPT_CONV   = {:connect          => lambda {|arg| arg == 'false' ? false : arg}, # be sure to convert 'false' to FalseClass
                   :replicaset       => lambda {|arg| arg},
                   :slaveok          => lambda {|arg| arg == 'true' ? true : false},
                   :safe             => lambda {|arg| arg == 'true' ? true : false},
-                  :w                => lambda {|arg| arg.to_i},
+                  :w                => lambda {|arg| Mongo::Support.is_i?(arg) ? arg.to_i : arg.to_sym },
                   :wtimeout         => lambda {|arg| arg.to_i},
                   :fsync            => lambda {|arg| arg == 'true' ? true : false},
                   :journal          => lambda {|arg| arg == 'true' ? true : false},
                   :connecttimeoutms => lambda {|arg| arg.to_f / 1000 }, # stored as seconds
                   :sockettimeoutms  => lambda {|arg| arg.to_f / 1000 }, # stored as seconds
-                  :wtimeoutms       => lambda {|arg| arg.to_i }
+                  :wtimeoutms       => lambda {|arg| arg.to_i },
+                  :pool_size        => lambda {|arg| arg.to_i }
                  }
 
-    attr_reader :auths, :connect, :replicaset, :slaveok, :safe, :w, :wtimeout, :fsync, :journal, :connecttimeoutms, :sockettimeoutms, :wtimeoutms
+    attr_reader :auths,
+                :connect,
+                :replicaset,
+                :slaveok,
+                :safe,
+                :w,
+                :wtimeout,
+                :fsync,
+                :journal,
+                :connecttimeoutms,
+                :sockettimeoutms,
+                :wtimeoutms,
+                :pool_size,
+                :nodes
 
-    # Parse a MongoDB URI. This method is used by Connection.from_uri.
+    # Parse a MongoDB URI. This method is used by MongoClient.from_uri.
     # Returns an array of nodes and an array of db authorizations, if applicable.
     #
     # @note Passwords can contain any character except for ','
@@ -100,17 +131,25 @@ module Mongo
       validate_connect
     end
 
-    # Create a Mongo::Connection or a Mongo::ReplSetConnection based on the URI.
+    # Create a Mongo::MongoClient or a Mongo::MongoReplicaSetClient based on the URI.
     #
     # @note Don't confuse this with attribute getter method #connect.
     #
-    # @return [Connection,ReplSetConnection]
-    def connection(extra_opts)
+    # @return [MongoClient,MongoReplicaSetClient]
+    def connection(extra_opts, legacy=false)
       opts = connection_options.merge! extra_opts
-      if replicaset?
-        ReplSetConnection.new(nodes, opts)
+      if(legacy)
+        if replicaset?
+          ReplSetConnection.new(node_strings, opts)
+        else
+          Connection.new(host, port, opts)
+        end
       else
-        Connection.new(host, port, opts)
+        if replicaset?
+          MongoReplicaSetClient.new(node_strings, opts)
+        else
+          MongoClient.new(host, port, opts)
+        end
       end
     end
 
@@ -147,51 +186,39 @@ module Mongo
       nodes[0][1].to_i
     end
 
-    # Options that can be passed to Mongo::Connection.new or Mongo::ReplSetConnection.new
+    # Options that can be passed to MongoClient.new or MongoReplicaSetClient.new
     # @return [Hash]
     def connection_options
       opts = {}
 
-      if (@w || @journal || @wtimeout || @fsync || @wtimeoutms) && !@safe
-        raise MongoArgumentError, "Safe must be true if w, journal, wtimeoutMS, or fsync is specified"
+      if @wtimeout
+        warn "Using wtimeout in a URI is deprecated, please use wtimeoutMS. It will be removed in v2.0."
+        opts[:wtimeout] = @wtimeout
       end
+      opts[:wtimeout] = @wtimeoutms
 
-      if @safe
-        if @w || @journal || @wtimeout || @fsync || @wtimeoutms
-          safe_opts = {}
-          safe_opts[:w] = @w if @w
-          safe_opts[:j] = @journal if @journal
-          
-          if @wtimeout
-            warn "Using wtimeout in a URI is deprecated, please use wtimeoutMS. It will be removed in v2.0."
-            safe_opts[:wtimeout] = @wtimeout
-          end
-          
-          if @wtimeoutms
-            safe_opts[:wtimeout] = @wtimeoutms
-          end
-          
-          safe_opts[:fsync] = @fsync if @fsync
-        else
-          safe_opts = true
-        end
+      opts[:w] = 1 if @safe
+      opts[:w] = @w if @w
+      opts[:j] = @journal
+      opts[:fsync] = @fsync
 
-        opts[:safe] = safe_opts
-      end
-      
       if @connecttimeoutms
         opts[:connect_timeout] = @connecttimeoutms
       end
-      
+
       if @sockettimeoutms
         opts[:op_timeout] = @sockettimeoutms
+      end
+
+      if @pool_size
+        opts[:pool_size] = @pool_size
       end
 
       if @slaveok
         if direct?
           opts[:slave_ok] = true
         else
-          opts[:read] = :secondary
+          opts[:read] = :secondary_preferred
         end
       end
 
@@ -208,12 +235,8 @@ module Mongo
       opts
     end
 
-    def nodes
-      if @nodes.length == 1
-        @nodes
-      else
-        @nodes.collect {|node| "#{node[0]}:#{node[1]}"}
-      end
+    def node_strings
+      nodes.map { |node| node.join(':') }
     end
 
     private
@@ -235,14 +258,13 @@ module Mongo
 
       hosturis.each do |hosturi|
         # If port is present, use it, otherwise use default port
-        host, port = hosturi.split(':') + [Connection::DEFAULT_PORT]
+        host, port = hosturi.split(':') + [MongoClient::DEFAULT_PORT]
 
         if !(port.to_s =~ /^\d+$/)
           raise MongoArgumentError, "Invalid port #{port}; port must be specified as digits."
         end
 
         port = port.to_i
-
         @nodes << [host, port]
       end
 

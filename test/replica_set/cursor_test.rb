@@ -6,52 +6,47 @@ class ReplicaSetCursorTest < Test::Unit::TestCase
     ensure_cluster(:rs)
   end
 
-  def self.shutdown
-    @@cluster.stop
-    @@cluster.clobber
-  end
-
   def test_cursors_get_closed
-    setup_connection
+    setup_client
     assert_cursor_count
   end
 
-  def test_cursors_get_closed_secondary
-    setup_connection(:secondary)
-    assert_cursor_count
-  end
+  #def test_cursors_get_closed_secondary
+  #  setup_client(:secondary)
+  #  assert_cursor_count
+  #end
 
   private
 
-  def setup_connection(read=:primary)
+  def setup_client(read=:primary)
     # Setup ReplicaSet Connection
-    @replconn = Mongo::ReplSetConnection.new(
+    @client = MongoReplicaSetClient.new(
         @rs.repl_set_seeds,
       :read => read
     )
-    
-    @db = @replconn.db(MONGO_TEST_DB)
+
+    @db = @client.db(MONGO_TEST_DB)
     @db.drop_collection("cursor_tests")
     @coll = @db.collection("cursor_tests")
 
-    @coll.insert({:a => 1}, :safe => true, :w => 3)
-    @coll.insert({:b => 2}, :safe => true, :w => 3)
-    @coll.insert({:c => 3}, :safe => true, :w => 3)
+    @coll.insert({:a => 1}, :w => 2)
+    @coll.insert({:b => 2}, :w => 2)
+    @coll.insert({:c => 3}, :w => 2)
 
     # Pin reader
     @coll.find_one
 
     # Setup Direct Connections
-    @primary = Mongo::Connection.new(*@replconn.manager.primary)
-    @read = Mongo::Connection.new(*@replconn.manager.read)
+    @primary = Mongo::MongoClient.new(*@client.manager.primary)
+    @read = Mongo::MongoClient.new(*@client.manager.read)
   end
 
-  def cursor_count(connection)
-    connection['cursor_tests'].command({:cursorInfo => 1})['totalOpen']
+  def cursor_count(client)
+    client['cursor_tests'].command({:cursorInfo => 1})['totalOpen']
   end
 
-  def query_count(connection)
-    connection['admin'].command({:serverStatus => 1})['opcounters']['query']
+  def query_count(client)
+    client['admin'].command({:serverStatus => 1})['opcounters']['query']
   end
 
   def assert_cursor_count

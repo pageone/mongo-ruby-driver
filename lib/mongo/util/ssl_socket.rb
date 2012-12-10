@@ -20,7 +20,7 @@ module Mongo
 
       @ssl = OpenSSL::SSL::SSLSocket.new(@socket)
       @ssl.sync_close = true
-      
+
       connect
     end
 
@@ -46,10 +46,6 @@ module Mongo
       else
         @ssl.sysread(length, buffer)
       end 
-    end
-
-    def setsockopt(key, value, n)
-      @ssl.setsockopt(key, value, n)
     end
 
     def close

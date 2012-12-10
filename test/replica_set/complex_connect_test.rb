@@ -6,33 +6,32 @@ class ComplexConnectTest < Test::Unit::TestCase
     ensure_cluster(:rs)
   end
 
-  def self.shutdown
-    @@cluster.stop
-    @@cluster.clobber
-  end
-
   def teardown
-    @conn.close if defined?(@conn) && @conn
+    @client.close if defined?(@conn) && @conn
   end
 
   def test_complex_connect
     host = @rs.servers.first.host
-    primary = Connection.new(host, @rs.primary.port)
+    primary = MongoClient.new(host, @rs.primary.port)
 
-    @conn = ReplSetConnection.new([
+    @client = MongoReplicaSetClient.new([
       @rs.servers[2].host_port,
       @rs.servers[1].host_port,
       @rs.servers[0].host_port
     ])
 
-    version = @conn.server_version
+    version = @client.server_version
 
-    @conn['test']['foo'].insert({:a => 1})
-    assert @conn['test']['foo'].find_one
+    @client['test']['foo'].insert({:a => 1})
+    assert @client['test']['foo'].find_one
 
     config = primary['local']['system.replset'].find_one
+    old_config = config.dup
     config['version'] += 1
-    port_to_delete = @rs.servers.collect(&:port).find{|port| port != primary.port}.to_s # eliminate exception: can't find self in new replset config
+
+    # eliminate exception: can't find self in new replset config
+    port_to_delete = @rs.servers.collect(&:port).find{|port| port != primary.port}.to_s
+
     config['members'].delete_if do |member|
       member['host'].include?(port_to_delete)
     end
@@ -42,21 +41,24 @@ class ComplexConnectTest < Test::Unit::TestCase
     end
     @rs.start
 
-    force_stepdown = BSON::OrderedHash.new
-    force_stepdown[:replSetStepDown] = 1
-    force_stepdown[:force] = true
 
     assert_raise ConnectionFailure do
-      primary['admin'].command(force_stepdown)
+      primary['admin'].command(step_down_command)
     end
 
     # isMaster is currently broken in 2.1+ when called on removed nodes
+    puts version
     if version < "2.1"
       rescue_connection_failure do
-        assert @conn['test']['foo'].find_one
+        assert @client['test']['foo'].find_one
       end
 
-      assert @conn['test']['foo'].find_one
+      assert @client['test']['foo'].find_one
+    end
+
+    primary = MongoClient.new(host, @rs.primary.port)
+    assert_raise ConnectionFailure do
+      primary['admin'].command({:replSetReconfig => old_config})
     end
   end
 end

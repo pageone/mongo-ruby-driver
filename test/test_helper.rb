@@ -1,35 +1,33 @@
 require 'rubygems'
-gem 'test-unit'
 require 'test/unit'
 require 'tools/mongo_config'
 
-TEST_DATA = File.join(File.dirname(__FILE__), 'data')
-
 class Test::Unit::TestCase
 
-  def ensure_cluster(kind=nil)
-    if defined?(@@current_class) and @@current_class == self.class
-      @@cluster.start
-    else
-      @@current_class = self.class
+  TEST_DATA = File.join(File.dirname(__FILE__), 'data')
 
+  def ensure_cluster(kind=nil, opts={})
+    @@cluster ||= false
+
+    unless @@cluster
       if kind == :rs
-        opts = Mongo::Config::DEFAULT_REPLICA_SET
-        opts.merge!(:arbiters => 2)
+        cluster_opts = Mongo::Config::DEFAULT_REPLICA_SET.dup
       else
-        opts = Mongo::Config::DEFAULT_SHARDED_SIMPLE
-        opts.merge!(:routers => 4)
+        cluster_opts = Mongo::Config::DEFAULT_SHARDED_SIMPLE.dup
       end
 
+      cluster_opts.merge!(opts)
+
       dbpath = ENV['DBPATH'] || 'data'
-      opts.merge!(:dbpath => dbpath)
+      cluster_opts.merge!(:dbpath => dbpath)
 
       #debug 1, opts
-      config = Mongo::Config.cluster(opts)
+      config = Mongo::Config.cluster(cluster_opts)
       #debug 1, config
       @@cluster = Mongo::Config::ClusterManager.new(config)
-      @@cluster.start
     end
+
+    @@cluster.start
     instance_variable_set("@#{kind}", @@cluster)
   end
 
@@ -62,7 +60,7 @@ end
 
 begin
   silently { require 'shoulda' }
-  silently { require 'mocha' }
+  silently { require 'mocha/setup' }
 rescue LoadError
   puts <<MSG
 
@@ -82,7 +80,7 @@ unless defined? MONGO_TEST_DB
 end
 
 unless defined? TEST_PORT
-  TEST_PORT = ENV['MONGO_RUBY_DRIVER_PORT'] ? ENV['MONGO_RUBY_DRIVER_PORT'].to_i : Mongo::Connection::DEFAULT_PORT
+  TEST_PORT = ENV['MONGO_RUBY_DRIVER_PORT'] ? ENV['MONGO_RUBY_DRIVER_PORT'].to_i : Mongo::MongoClient::DEFAULT_PORT
 end
 
 unless defined? TEST_HOST
@@ -93,12 +91,16 @@ class Test::Unit::TestCase
   include Mongo
   include BSON
 
-  def self.standard_connection(options={})
-    Connection.new(TEST_HOST, TEST_PORT, options)
+  def self.standard_connection(options={}, legacy=false)
+    if legacy
+      Connection.new(TEST_HOST, TEST_PORT, options)
+    else
+      MongoClient.new(TEST_HOST, TEST_PORT, options)
+    end
   end
 
-  def standard_connection(options={})
-    self.class.standard_connection(options)
+  def standard_connection(options={}, legacy=false)
+    self.class.standard_connection(options, legacy)
   end
 
   def self.host_port
@@ -125,9 +127,30 @@ class Test::Unit::TestCase
     self.class.mongo_port
   end
 
+  def method_name
+    caller[0]=~/`(.*?)'/
+    $1
+  end
+
+  def step_down_command
+    # Adding force=true to avoid 'no secondaries within 10 seconds of my optime' errors
+    step_down_command = BSON::OrderedHash.new
+    step_down_command[:replSetStepDown] = 5
+    step_down_command[:force]           = true
+    step_down_command
+  end
+
   def new_mock_socket(host='localhost', port=27017)
     socket = Object.new
     socket.stubs(:setsockopt).with(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+    socket.stubs(:close)
+    socket.stubs(:closed?)
+    socket
+  end
+
+  def new_mock_unix_socket(sockfile='/tmp/mongod.sock')
+    socket = Object.new
+    socket.stubs(:setsockopt).with(Socket::IPPROTO_TCP)
     socket.stubs(:close)
     socket.stubs(:closed?)
     socket

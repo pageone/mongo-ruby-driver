@@ -1,7 +1,7 @@
 # encoding: UTF-8
 
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,13 +23,14 @@ module Mongo
 
   # A MongoDB database.
   class DB
+    include Mongo::WriteConcern
 
-    SYSTEM_NAMESPACE_COLLECTION = "system.namespaces"
-    SYSTEM_INDEX_COLLECTION = "system.indexes"
-    SYSTEM_PROFILE_COLLECTION = "system.profile"
-    SYSTEM_USER_COLLECTION = "system.users"
-    SYSTEM_JS_COLLECTION = "system.js"
-    SYSTEM_COMMAND_COLLECTION = "$cmd"
+    SYSTEM_NAMESPACE_COLLECTION = 'system.namespaces'
+    SYSTEM_INDEX_COLLECTION     = 'system.indexes'
+    SYSTEM_PROFILE_COLLECTION   = 'system.profile'
+    SYSTEM_USER_COLLECTION      = 'system.users'
+    SYSTEM_JS_COLLECTION        = 'system.js'
+    SYSTEM_COMMAND_COLLECTION   = '$cmd'
 
     # Counter for generating unique request ids.
     @@current_request_id = 0
@@ -44,10 +45,10 @@ module Mongo
     # Returns the value of the +strict+ flag.
     def strict?; @strict; end
 
-    # The name of the database and the local safe option.
-    attr_reader :name, :safe
+    # The name of the database and the local write concern options.
+    attr_reader :name, :write_concern
 
-    # The Mongo::Connection instance connecting to the MongoDB server.
+    # The Mongo::MongoClient instance connecting to the MongoDB server.
     attr_reader :connection
 
     # The length of time that Collection.ensure_index should cache index calls
@@ -59,8 +60,8 @@ module Mongo
     # Instances of DB are normally obtained by calling Mongo#db.
     #
     # @param [String] name the database name.
-    # @param [Mongo::Connection] connection a connection object pointing to MongoDB. Note
-    #   that databases are usually instantiated via the Connection class. See the examples below.
+    # @param [Mongo::MongoClient] client a connection object pointing to MongoDB. Note
+    #   that databases are usually instantiated via the MongoClient class. See the examples below.
     #
     # @option opts [Boolean] :strict (False) If true, collections must exist to be accessed and must
     #   not exist to be created. See DB#collection and DB#create_collection.
@@ -70,23 +71,31 @@ module Mongo
     #   fields the factory wishes to inject. (NOTE: if the object already has a primary key,
     #   the factory should not inject a new key).
     #
-    # @option opts [Boolean, Hash] :safe (false) Set the default safe-mode options
-    #   propagated to Collection objects instantiated off of this DB. If no
-    #   value is provided, the default value set on this instance's Connection object will be used. This
-    #   default can be overridden upon instantiation of any collection by explicitly setting a :safe value
-    #   on initialization
+    # @option opts [String, Integer, Symbol] :w (1) Set default number of nodes to which a write
+    #   should be acknowledged
+    # @option opts [Boolean] :j (false) Set journal acknowledgement
+    # @option opts [Integer] :wtimeout (nil) Set replica set acknowledgement timeout
+    # @option opts [Boolean] :fsync (false) Set fsync acknowledgement.
+    #
+    #   Notes on write concern:
+    #     These write concern options are propagated to Collection objects instantiated off of this DB. If no
+    #     options are provided, the default write concern set on this instance's MongoClient object will be used. This
+    #     default can be overridden upon instantiation of any collection by explicitly setting write concern options
+    #     on initialization or at the time of an operation.
     #
     # @option opts [Integer] :cache_time (300) Set the time that all ensure_index calls should cache the command.
     #
     # @core databases constructor_details
-    def initialize(name, connection, opts={})
+    def initialize(name, client, opts={})
       @name       = Mongo::Support.validate_db_name(name)
-      @connection = connection
+      @connection = client
       @strict     = opts[:strict]
       @pk_factory = opts[:pk]
-      @safe       = opts.fetch(:safe, @connection.safe)
+
+      @write_concern = get_write_concern(opts, client)
+
       if value = opts[:read]
-        Mongo::Support.validate_read_preference(value)
+        Mongo::ReadPreference::validate(value)
       else
         value = @connection.read_preference
       end
@@ -102,7 +111,7 @@ module Mongo
     # @param [String] username
     # @param [String] password
     # @param [Boolean] save_auth
-    #   Save this authentication to the connection object using Connection#add_auth. This
+    #   Save this authentication to the client object using MongoClient#add_auth. This
     #   will ensure that the authentication will be applied on database reconnect. Note
     #   that this value must be true when using connection pooling.
     #
@@ -173,7 +182,7 @@ module Mongo
     # @return [Boolean]
     def remove_stored_function(function_name)
       if self[SYSTEM_JS_COLLECTION].find_one({"_id" => function_name})
-        self[SYSTEM_JS_COLLECTION].remove({"_id" => function_name}, :safe => true)
+        self[SYSTEM_JS_COLLECTION].remove({"_id" => function_name}, :w => 1)
       else
         return false
       end
@@ -205,14 +214,14 @@ module Mongo
     # @return [Boolean]
     def remove_user(username)
       if self[SYSTEM_USER_COLLECTION].find_one({:user => username})
-        self[SYSTEM_USER_COLLECTION].remove({:user => username}, :safe => true)
+        self[SYSTEM_USER_COLLECTION].remove({:user => username}, :w => 1)
       else
         return false
       end
     end
 
-    # Deauthorizes use for this database for this connection. Also removes
-    # any saved authentication in the connection class associated with this
+    # Deauthorizes use for this database for this client connection. Also removes
+    # any saved authentication in the MongoClient class associated with this
     # database.
     #
     # @raise [MongoDBError] if logging out fails.
@@ -323,7 +332,6 @@ module Mongo
           "Currently in strict mode."
       else
         opts = opts.dup
-        opts[:safe] = opts.fetch(:safe, @safe)
         opts.merge!(:pk => @pk_factory) unless opts[:pk]
         Collection.new(name, self, opts)
       end
@@ -504,6 +512,9 @@ module Mongo
     # @option opts [Boolean] :check_response (true) If +true+, raises an exception if the
     # command fails.
     # @option opts [Socket] :socket a socket to use for sending the command. This is mainly for internal use.
+    # @option opts [:primary, :secondary] :read Read preference for this command. See Collection#find for
+    #  more details.
+    # @option opts [String]  :comment (nil) a comment to include in profiling logs
     #
     # @return [Hash]
     #
@@ -516,9 +527,20 @@ module Mongo
         raise MongoArgumentError, "DB#command requires an OrderedHash when hash contains multiple keys"
       end
 
+      if read_pref = opts[:read]
+        Mongo::ReadPreference::validate(read_pref)
+        if read_pref != :primary && !Mongo::Support::secondary_ok?(selector)
+          raise Mongo.ArgumentError, "Command is not supported on secondaries: #{selector.keys.first}"
+        end
+      end
+
       begin
         result = Cursor.new(system_command_collection,
-          :limit => -1, :selector => selector, :socket => socket).next_document
+                            :limit => -1,
+                            :selector => selector,
+                            :socket => socket,
+                            :read => read_pref,
+                            :comment => opts[:comment]).next_document
       rescue OperationFailure => ex
         raise OperationFailure, "Database command '#{selector.keys.first}' failed: #{ex.message}"
       end

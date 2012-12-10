@@ -1,7 +1,7 @@
 # encoding: UTF-8
 
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,8 +41,8 @@ module Mongo
 
       # Create indexes only if we're connected to a primary node.
       connection = @db.connection
-      if (connection.class == Connection && connection.read_primary?) ||
-          (connection.class == ReplSetConnection && connection.primary)
+      if (connection.class == MongoClient && connection.read_primary?) ||
+          (connection.class == MongoReplicaSetClient && connection.primary)
         @files.create_index([['filename', 1], ['uploadDate', -1]])
         @chunks.create_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
       end
@@ -69,8 +69,11 @@ module Mongo
     # @option opts [Boolean] :delete_old (false) ensure that old versions of the file are deleted. This option
     #  only work in 'w' mode. Certain precautions must be taken when deleting GridFS files. See the notes under
     #  GridFileSystem#delete.
-    # @option opts [Boolean] :safe (false) When safe mode is enabled, the chunks sent to the server
-    #   will be validated using an md5 hash. If validation fails, an exception will be raised.
+    # @option opts [String, Integer, Symbol] :w (1) Set write concern
+    #
+    #   Notes on write concern:
+    #     When :w > 0, the chunks sent to the server
+    #     will be validated using an md5 hash. If validation fails, an exception will be raised.
     # @option opts [Integer] :versions (false) deletes all versions which exceed the number specified to 
     #   retain ordered by uploadDate. This option only works in 'w' mode. Certain precautions must be taken when 
     #   deleting GridFS files. See the notes under GridFileSystem#delete.

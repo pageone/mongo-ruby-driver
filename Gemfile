@@ -1,31 +1,29 @@
 source :rubygems
 
-group :development, :test do
-  # Generic
-  gem "bundler"
-  gem "rake"
-  gem "json"
-  gem "activesupport"
+gem 'json'
+gem 'rake', :require => ['rake/testtask']
+gem 'rake-compiler', :require => ['rake/extensiontask', 'rake/javaextensiontask']
+gem 'activesupport'
 
-  # Deployment
-  gem "git"
-  gem "redcarpet", "2.2.0" unless RUBY_PLATFORM =~ /java/
-  gem "yard"
+group :deploy do
+  gem 'git'
+  gem 'yard'
+  gem 'rvm'
+  gem 'version_bumper'
+  gem 'redcarpet' unless RUBY_PLATFORM =~ /java/
+end
 
-  # Testing
-  gem "test-unit"
-  gem "mocha", ">=0.12.4" #0.12.3 is broken for us
-  gem "shoulda"
-  gem "ci_reporter"
-  gem "ruby-prof" unless RUBY_PLATFORM =~ /java/
-  gem "rake-compiler"
-  # posix-spawn: XCode 4.4 - brew install apple-gcc42; export CC=/usr/local/bin/gcc-4.2 && bundle install
-  gem "posix-spawn" if RUBY_PLATFORM =~ /java/
+group :testing do
+  gem 'simplecov', :require => false
+  gem 'test-unit'
+  gem 'mocha', "0.13.0", :require => 'mocha/setup'
+  gem 'shoulda', "3.3.2"
+  gem 'sfl'
+  gem 'rspec'
+end
 
-  # Java
-  platforms :jruby do
-    gem "bouncy-castle-java"
-    gem "jruby-launcher"
-    gem "jruby-openssl"
-  end
+platforms :jruby do
+  gem 'bouncy-castle-java'
+  gem 'jruby-launcher'
+  gem 'jruby-openssl'
 end

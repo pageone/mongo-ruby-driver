@@ -1,7 +1,7 @@
 # encoding: UTF-8
 
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@
 # Hash already keeps its keys ordered by order of insertion.
 
 module BSON
-  class OrderedHash < HashWithIndifferentAccess
+  class OrderedHash < Hash
 
     def ==(other)
       begin
@@ -71,7 +71,6 @@ module BSON
       end
 
       def []=(key, value)
-        key = convert_key(key)
         unless has_key?(key)
           @ordered_keys << key
         end

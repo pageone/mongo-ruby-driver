@@ -18,7 +18,7 @@ module Mongo
     # @return [Integer] number of bytes sent
     def send_message(operation, message, opts={})
       if opts.is_a?(String)
-        warn "Connection#send_message no longer takes a string log message. " +
+        warn "MongoClient#send_message no longer takes a string log message. " +
           "Logging is now handled within the Collection and Cursor classes."
         opts = {}
       end
@@ -56,12 +56,11 @@ module Mongo
     # @see DB#get_last_error for valid last error params.
     #
     # @return [Hash] The document returned by the call to getlasterror.
-    def send_message_with_safe_check(operation, message, db_name, log_message=nil, last_error_params=false)
+    def send_message_with_gle(operation, message, db_name, log_message=nil, write_concern=false)
       docs = num_received = cursor_id = ''
       add_message_headers(message, operation)
 
-      last_error_message = BSON::ByteBuffer.new
-      build_last_error_message(last_error_message, db_name, last_error_params)
+      last_error_message = build_get_last_error_message(db_name, write_concern)
       last_error_id = add_message_headers(last_error_message, Mongo::Constants::OP_QUERY)
 
       packed_message = message.append!(last_error_message).to_s
@@ -181,7 +180,7 @@ module Mongo
 
       # unpacks to flags, cursor_id_a, cursor_id_b, starting_from, number_remaining
       flags, cursor_id_a, cursor_id_b, _, number_remaining = header_buf.unpack('VVVVV')
-      
+
       check_response_flags(flags)
       cursor_id = (cursor_id_b << 32) + cursor_id_a
       [number_remaining, cursor_id]
@@ -209,23 +208,29 @@ module Mongo
       [docs, number_received]
     end
 
-    # Constructs a getlasterror message. This method is used exclusively by
-    # Connection#send_message_with_safe_check.
-    #
-    # Because it modifies message by reference, we don't need to return it.
-    def build_last_error_message(message, db_name, opts)
+    def build_command_message(db_name, query, projection=nil, skip=0, limit=-1)
+      message = BSON::ByteBuffer.new
       message.put_int(0)
       BSON::BSON_RUBY.serialize_cstr(message, "#{db_name}.$cmd")
-      message.put_int(0)
-      message.put_int(-1)
-      cmd = BSON::OrderedHash.new
-      cmd[:getlasterror] = 1
-      if opts.is_a?(Hash)
-        opts.assert_valid_keys(:w, :wtimeout, :fsync, :j)
-        cmd.merge!(opts)
+      message.put_int(skip)
+      message.put_int(limit)
+      message.put_binary(BSON::BSON_CODER.serialize(query, false).to_s)
+      message.put_binary(BSON::BSON_CODER.serialize(projection, false).to_s) if projection
+      message
+    end
+
+    # Constructs a getlasterror message. This method is used exclusively by
+    # MongoClient#send_message_with_gle.
+    def build_get_last_error_message(db_name, write_concern)
+      gle = BSON::OrderedHash.new
+      gle[:getlasterror] = 1
+      if write_concern.is_a?(Hash)
+        write_concern.assert_valid_keys(:w, :wtimeout, :fsync, :j)
+        gle.merge!(write_concern)
+        gle.delete(:w) if gle[:w] == 1
       end
-      message.put_binary(BSON::BSON_CODER.serialize(cmd, false).to_s)
-      nil
+      gle[:w] = gle[:w].to_s if gle[:w].is_a?(Symbol)
+      build_command_message(db_name, gle)
     end
 
     # Prepares a message for transmission to MongoDB by
@@ -282,6 +287,7 @@ module Mongo
       end
       total_bytes_sent
       rescue => ex
+        socket.close
         raise ConnectionFailure, "Operation failed with the following exception: #{ex}:#{ex.message}"
       end
     end
@@ -306,7 +312,7 @@ module Mongo
     def receive_data(length, socket)
       message = new_binary_string
       socket.read(length, message)
- 
+
       raise ConnectionFailure, "connection closed" unless message && message.length > 0
       if message.length < length
         chunk = new_binary_string

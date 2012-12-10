@@ -10,10 +10,10 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "send update message" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
-      @conn.expects(:send_message).with do |op, msg, log|
+      @client.expects(:send_message_with_gle).with do |op, msg, log|
         op == 2001
       end
       @coll.stubs(:log_operation)
@@ -21,10 +21,10 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "send insert message" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
-      @conn.expects(:send_message).with do |op, msg, log|
+      @client.expects(:send_message_with_gle).with do |op, msg, log|
         op == 2002
       end
       @coll.expects(:log_operation).with do |name, payload|
@@ -34,11 +34,11 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "send sort data" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
-      @conn.expects(:checkout_reader).returns(mock(:pool))
-      @conn.expects(:receive_message).with do |op, msg, log, sock|
+      @client.expects(:checkout_reader).returns(mock(:pool))
+      @client.expects(:receive_message).with do |op, msg, log, sock|
         op == 2004
       end.returns([[], 0, 0])
       @logger.expects(:debug)
@@ -46,11 +46,11 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "not log binary data" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
       data = BSON::Binary.new(("BINARY " * 1000).unpack("c*"))
-      @conn.expects(:send_message).with do |op, msg, log|
+      @client.expects(:send_message_with_gle).with do |op, msg, log|
         op == 2002
       end
       @coll.expects(:log_operation).with do |name, payload|
@@ -60,32 +60,45 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "send safe update message" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
-      @conn.expects(:send_message_with_safe_check).with do |op, msg, db_name, log|
+      @client.expects(:send_message_with_gle).with do |op, msg, db_name, log|
         op == 2001
       end
       @coll.expects(:log_operation).with do |name, payload|
         (name == :update) && payload[:document][:title].include?('Moby')
       end
-      @coll.update({}, {:title => 'Moby Dick'}, :safe => true)
+      @coll.update({}, {:title => 'Moby Dick'})
+    end
+
+    should "send safe update message with legacy" do
+      @connection = Connection.new('localhost', 27017, :logger => @logger, :safe => true, :connect => false)
+      @db         = @connection['testing']
+      @coll       = @db.collection('books')
+      @connection.expects(:send_message_with_gle).with do |op, msg, db_name, log|
+        op == 2001
+      end
+      @coll.expects(:log_operation).with do |name, payload|
+        (name == :update) && payload[:document][:title].include?('Moby')
+      end
+      @coll.update({}, {:title => 'Moby Dick'})
     end
 
     should "send safe insert message" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
-      @conn.expects(:send_message_with_safe_check).with do |op, msg, db_name, log|
+      @client.expects(:send_message_with_gle).with do |op, msg, db_name, log|
         op == 2001
       end
       @coll.stubs(:log_operation)
-      @coll.update({}, {:title => 'Moby Dick'}, :safe => true)
+      @coll.update({}, {:title => 'Moby Dick'})
     end
 
     should "not call insert for each ensure_index call" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
       @coll.expects(:generate_indexes).once
 
@@ -94,8 +107,8 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "call generate_indexes for a new direction on the same field for ensure_index" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
       @coll.expects(:generate_indexes).twice
 
@@ -105,8 +118,8 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "call generate_indexes twice because the cache time is 0 seconds" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @db.cache_time = 0
       @coll = @db.collection('books')
       @coll.expects(:generate_indexes).twice
@@ -116,8 +129,8 @@ class CollectionTest < Test::Unit::TestCase
     end
 
     should "call generate_indexes for each key when calling ensure_indexes" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @db.cache_time = 300
       @coll = @db.collection('books')
       @coll.expects(:generate_indexes).once.with do |a, b, c|
@@ -127,9 +140,32 @@ class CollectionTest < Test::Unit::TestCase
       @coll.ensure_index [["x", Mongo::DESCENDING], ["y", Mongo::DESCENDING]]
     end
 
+    should "call generate_indexes for each key when calling ensure_indexes with a hash" do
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
+      @db.cache_time = 300
+      @coll = @db.collection('books')
+      oh = BSON::OrderedHash.new
+      oh['x'] = Mongo::DESCENDING
+      oh['y'] = Mongo::DESCENDING
+      @coll.expects(:generate_indexes).once.with do |a, b, c|
+        a == oh
+      end
+
+      if RUBY_VERSION > '1.9'
+          @coll.ensure_index({"x" => Mongo::DESCENDING, "y" => Mongo::DESCENDING})
+      else
+          ordered_hash = BSON::OrderedHash.new
+          ordered_hash['x'] = Mongo::DESCENDING
+          ordered_hash['y'] = Mongo::DESCENDING
+          @coll.ensure_index(ordered_hash)
+      end
+    end
+
+
     should "use the connection's logger" do
-      @conn = Connection.new('localhost', 27017, :logger => @logger, :connect => false)
-      @db   = @conn['testing']
+      @client = MongoClient.new('localhost', 27017, :logger => @logger, :connect => false)
+      @db   = @client['testing']
       @coll = @db.collection('books')
       @logger.expects(:warn).with do |msg|
         msg == "MONGODB [WARNING] test warning"

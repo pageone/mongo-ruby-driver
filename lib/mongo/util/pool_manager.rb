@@ -1,7 +1,7 @@
 module Mongo
   class PoolManager
 
-    attr_reader :connection, :arbiters, :primary, :secondaries, :primary_pool,
+    attr_reader :client, :arbiters, :primary, :secondaries, :primary_pool,
       :secondary_pool, :secondary_pools, :hosts, :nodes, :members, :seeds,
       :max_bson_size
 
@@ -14,10 +14,10 @@ module Mongo
     # the user may pass an additional list of seeds nodes discovered in real
     # time. The union of these lists will be used when attempting to connect,
     # with the newly-discovered nodes being used first.
-    def initialize(connection, seeds=[])
-      @pinned_pools = {}
-      @connection = connection
-      @seeds = seeds
+    def initialize(client, seeds=[])
+      @pinned_pools         = {}
+      @client               = client
+      @seeds                = seeds
       @previously_connected = false
     end
 
@@ -99,9 +99,9 @@ module Mongo
       read_pool.host_port
     end
 
-    def read_pool(mode=@connection.read_preference, tags=@connection.tag_sets, 
-      acceptable_latency=@connection.acceptable_latency)
-
+    def read_pool(mode=@client.read_preference,
+                  tags=@client.tag_sets,
+                  acceptable_latency=@client.acceptable_latency)
       if mode == :primary && !tags.empty?
         raise MongoArgumentError, "Read preferecy :primary cannot be combined with tags"
       end
@@ -159,18 +159,18 @@ module Mongo
     end
 
     def initialize_data
-      @primary = nil
-      @primary_pool = nil
-      @read = nil
-      @read_pool = nil
-      @arbiters = []
-      @secondaries = []
-      @secondary_pool = nil
-      @secondary_pools = []
-      @hosts = Set.new
-      @members = Set.new
+      @primary          = nil
+      @primary_pool     = nil
+      @read             = nil
+      @read_pool        = nil
+      @arbiters         = []
+      @secondaries      = []
+      @secondary_pool   = nil
+      @secondary_pools  = []
+      @hosts            = Set.new
+      @members          = Set.new
       @refresh_required = false
-      @pinned_pools = {}
+      @pinned_pools     = {}
     end
 
     # Connect to each member of the replica set
@@ -182,8 +182,8 @@ module Mongo
       seed = get_valid_seed_node
 
       seed.node_list.each do |host|
-        node = Mongo::Node.new(self.connection, host)
-        if node.connect && node.set_config && node.healthy?
+        node = Mongo::Node.new(self.client, host)
+        if node.healthy?
           members << node
         end
       end
@@ -200,7 +200,6 @@ module Mongo
     def initialize_pools(members)
       members.each do |member|
         @hosts << member.host_string
-
         if member.primary?
           assign_primary(member)
         elsif member.secondary? && !@secondaries.include?(member.host_port)
@@ -216,9 +215,9 @@ module Mongo
     def assign_primary(member)
       member.last_state = :primary
       @primary = member.host_port
-      @primary_pool = Pool.new(self.connection, member.host, member.port,
-        :size => self.connection.pool_size,
-        :timeout => self.connection.pool_timeout,
+      @primary_pool = Pool.new(self.client, member.host, member.port,
+        :size => self.client.pool_size,
+        :timeout => self.client.pool_timeout,
         :node => member
       )
     end
@@ -226,9 +225,9 @@ module Mongo
     def assign_secondary(member)
       member.last_state = :secondary
       @secondaries << member.host_port
-      pool = Pool.new(self.connection, member.host, member.port,
-        :size => self.connection.pool_size,
-        :timeout => self.connection.pool_timeout,
+      pool = Pool.new(self.client, member.host, member.port,
+        :size => self.client.pool_size,
+        :timeout => self.client.pool_timeout,
         :node => member
       )
       @secondary_pools << pool
@@ -268,13 +267,11 @@ module Mongo
     # If we don't get a response, raise an exception.
     def get_valid_seed_node
       @seeds.each do |seed|
-        node = Mongo::Node.new(self.connection, seed)
+        node = Mongo::Node.new(self.client, seed)
         if !node.connect
           next
         elsif node.set_config && node.healthy?
           return node
-        else
-          node.close
         end
       end
 

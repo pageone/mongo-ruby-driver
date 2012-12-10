@@ -15,10 +15,10 @@ module Mongo
       @connect_timeout = connect_timeout
 
       # TODO: Prefer ipv6 if server is ipv6 enabled
-      @host = Socket.getaddrinfo(host, nil, Socket::AF_INET).first[3]
+      @address = Socket.getaddrinfo(host, nil, Socket::AF_INET).first[3]
       @port = port
 
-      @socket_address = Socket.pack_sockaddr_in(@port, @host)
+      @socket_address = Socket.pack_sockaddr_in(@port, @address)
       @socket = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
       @socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
 
@@ -56,10 +56,6 @@ module Mongo
       rescue SystemCallError, IOError => ex
         raise ConnectionFailure, ex
       end
-    end
-
-    def setsockopt(key, value, n)
-      @socket.setsockopt(key, value, n)
     end
 
     def close

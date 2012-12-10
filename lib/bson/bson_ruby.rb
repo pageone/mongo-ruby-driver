@@ -1,7 +1,7 @@
 # encoding: UTF-8
 
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -132,7 +132,7 @@ module BSON
         end
         obj.each {|k, v| serialize_key_value(k, v, check_keys) unless k == '_id' || k == :_id }
       else
-        if !obj.respond_to?(:convert_key) && obj.has_key?('_id') && obj.has_key?(:_id)
+        if obj.has_key?('_id') && obj.has_key?(:_id)
           obj['_id'] = obj.delete(:_id)
         end
         obj.each {|k, v| serialize_key_value(k, v, check_keys) }

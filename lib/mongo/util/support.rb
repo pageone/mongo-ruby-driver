@@ -1,7 +1,7 @@
 # encoding: UTF-8
 
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,15 +20,24 @@ require 'digest/md5'
 
 module Mongo
   module Support
+
     include Mongo::Conversions
     extend self
 
-    READ_PREFERENCES = [:primary, :primary_preferred, :secondary, :secondary_preferred, :nearest]
-
     # Commands that may be sent to replica-set secondaries, depending on
     # read preference and tags. All other commands are always run on the primary.
-    SECONDARY_OK_COMMANDS = ['group', 'aggregate', 'collstats', 'dbstats', 'count', 'distinct',
-      'geonear', 'geosearch', 'geowalk']
+    SECONDARY_OK_COMMANDS = [
+      'group',
+      'aggregate',
+      'collstats',
+      'dbstats',
+      'count',
+      'distinct',
+      'geonear',
+      'geosearch',
+      'geowalk',
+      'mapreduce'
+    ]
 
     # Generate an MD5 for authentication.
     #
@@ -78,15 +87,6 @@ module Mongo
       end
     end
 
-    def validate_read_preference(value)
-      if READ_PREFERENCES.include?(value)
-        return true
-      else
-        raise MongoArgumentError, "#{value} is not a valid read preference. " +
-          "Please specify one of the following read preferences as a symbol: #{READ_PREFERENCES}"
-      end
-    end
-
     def format_order_clause(order)
       case order
         when Hash, BSON::OrderedHash then hash_as_sort_parameters(order)
@@ -96,6 +96,10 @@ module Mongo
           raise InvalidSortValueError, "Illegal sort clause, '#{order.class.name}'; must be of the form " +
             "[['field1', '(ascending|descending)'], ['field2', '(ascending|descending)']]"
       end
+    end
+
+    def is_i?(value)
+      return !!(value =~ /^\d+$/)
     end
 
     # Determine if a database command has succeeded by

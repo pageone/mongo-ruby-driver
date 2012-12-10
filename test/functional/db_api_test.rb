@@ -4,10 +4,10 @@ class DBAPITest < Test::Unit::TestCase
   include Mongo
   include BSON
 
-  @@conn = standard_connection
-  @@db   = @@conn.db(MONGO_TEST_DB)
+  @@client = standard_connection
+  @@db   = @@client.db(MONGO_TEST_DB)
   @@coll = @@db.collection('test')
-  @@version = @@conn.server_version
+  @@version = @@client.server_version
 
   def setup
     @@coll.remove
@@ -329,8 +329,7 @@ class DBAPITest < Test::Unit::TestCase
 
     @@db.create_collection('foobar')
 
-    opts = {:safe => true}
-    coll = @@db.create_collection('foobar', opts)
+    coll = @@db.create_collection('foobar')
     assert_equal true, coll.safe
   end
 
@@ -429,9 +428,9 @@ class DBAPITest < Test::Unit::TestCase
   end
 
   def test_array
-    @@coll.remove({'$atomic' => true}, :safe => true)
-    @@coll.insert({'b' => [1, 2, 3]}, :safe => true)
-    @@coll.insert({'b' => [1, 2, 3]}, :safe => true)
+    @@coll.remove({'$atomic' => true})
+    @@coll.insert({'b' => [1, 2, 3]})
+    @@coll.insert({'b' => [1, 2, 3]})
     rows = @@coll.find({}, {:fields => ['b']}).to_a
     assert_equal 2, rows.length
     assert_equal [1, 2, 3], rows[1]['b']

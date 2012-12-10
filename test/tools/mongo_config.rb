@@ -2,7 +2,7 @@
 require 'socket'
 require 'fileutils'
 require 'mongo'
-require 'posix/spawn' if RUBY_PLATFORM == 'java'
+require 'sfl'
 
 $debug_level = 2
 STDOUT.sync = true
@@ -25,8 +25,8 @@ end
 module Mongo
   class Config
     DEFAULT_BASE_OPTS = { :host => 'localhost', :dbpath => 'data', :logpath => 'data/log'}
-    DEFAULT_REPLICA_SET = DEFAULT_BASE_OPTS.merge( :replicas => 3, :arbiters => 0 )
-    DEFAULT_SHARDED_SIMPLE = DEFAULT_BASE_OPTS.merge( :shards => 2, :configs => 1, :routers => 2 )
+    DEFAULT_REPLICA_SET = DEFAULT_BASE_OPTS.merge( :replicas => 2, :arbiters => 1 )
+    DEFAULT_SHARDED_SIMPLE = DEFAULT_BASE_OPTS.merge( :shards => 2, :configs => 1, :routers => 4 )
     DEFAULT_SHARDED_REPLICA = DEFAULT_SHARDED_SIMPLE.merge( :replicas => 3, :arbiters => 0)
 
     IGNORE_KEYS = [:host, :command, :_id]
@@ -35,7 +35,7 @@ module Mongo
     MONGODS_OPT_KEYS = [:mongods]
     CLUSTER_OPT_KEYS = SHARDING_OPT_KEYS + REPLICA_OPT_KEYS + MONGODS_OPT_KEYS
 
-    FLAGS = [:noprealloc, :nojournal, :smallfiles, :logappend]
+    FLAGS = [:noprealloc, :smallfiles, :logappend, :configsvr, :shardsvr, :quiet, :fastsync]
 
     DEFAULT_VERIFIES = 60
     BASE_PORT = 3000
@@ -99,16 +99,18 @@ module Mongo
       mongod = ENV['MONGOD'] || 'mongod'
       path = File.dirname(params[:logpath])
 
-      nojournal  = opts[:nojournal]  || nil
       noprealloc = opts[:noprealloc] || true
       smallfiles = opts[:smallfiles] || true
+      quiet      = opts[:quiet]      || true
+      fast_sync  = opts[:fastsync]   || true
 
       params.merge(
         :command => mongod,
         :dbpath => path,
         :smallfiles => smallfiles,
-        :nojournal => nojournal,
-        :noprealloc => noprealloc
+        :noprealloc => noprealloc,
+        :quiet => quiet,
+        :fastsync => fast_sync
       )
     end
 
@@ -116,7 +118,7 @@ module Mongo
       params = make_mongod('replicas', opts)
 
       replSet    = opts[:replSet]    || 'ruby-driver-test'
-      oplog_size = opts[:oplog_size] || 10
+      oplog_size = opts[:oplog_size] || 5
 
       params.merge(
         :_id => count,
@@ -172,7 +174,11 @@ module Mongo
 
       def clear_zombie
         if @pid
-          pid = Process.wait(@pid, Process::WNOHANG)
+          begin
+            pid = Process.waitpid(@pid, Process::WNOHANG)
+          rescue Errno::ECHILD
+            # JVM might have already reaped the exit status
+          end
           @pid = nil if pid && pid > 0
         end
       end
@@ -181,18 +187,9 @@ module Mongo
         clear_zombie
         return @pid if running?
         begin
-          if RUBY_PLATFORM == 'java'
-            @pid = POSIX::Spawn::spawn(@cmd, [:in, :out, :err] => :close)
-          else
-            @pid = fork do
-              STDIN.reopen '/dev/null'
-              STDOUT.reopen '/dev/null', 'a'
-              STDERR.reopen STDOUT
-              exec @cmd
-            end
-            #@pid = Process.spawn(@cmd, [:in, :out, :err] => :close)
-          end
-          sleep 1 # relinquish the processor so the child runs
+          # redirection not supported in jruby
+          @pid = Process.spawn(*@cmd)
+          sleep 1
           verify(verifies) if verifies > 0
           @pid
         end
@@ -212,7 +209,11 @@ module Mongo
       end
 
       def wait
-        Process.wait(@pid) if @pid
+        begin
+          Process.waitpid(@pid) if @pid
+        rescue Errno::ECHILD
+          # JVM might have already reaped the exit status
+        end
         @pid = nil
       end
 
@@ -262,13 +263,13 @@ module Mongo
         params = @config.reject{|k,v| IGNORE_KEYS.include?(k)}
         arguments = params.sort{|a, b| a[0].to_s <=> b[0].to_s}.collect do |arg, value| # sort block is needed for 1.8.7 which lacks Symbol#<=>
           argument = '--' + arg.to_s
-          if FLAGS.member?(arg)
-            [value && argument]
-          else
-            [argument, value]
+          if FLAGS.member?(arg) && value == true
+            [argument]
+          elsif !FLAGS.member?(arg)
+            [argument, value.to_s]
           end
         end
-        cmd = [command, arguments].flatten.compact.join(' ')
+        cmd = [command, arguments].flatten.compact
         super(cmd, @config[:host], @config[:port])
       end
 
@@ -282,7 +283,7 @@ module Mongo
           #puts "DbServer.verify via connection probe - port:#{@port.inspect} iteration:#{i} @pid:#{@pid.inspect} kill:#{Process.kill(0, @pid).inspect} running?:#{running?.inspect} cmd:#{cmd.inspect}"
           begin
             raise Mongo::ConnectionFailure unless running?
-            Mongo::Connection.new(@host, @port).close
+            Mongo::MongoClient.new(@host, @port).close
             #puts "DbServer.verified via connection - port: #{@port} iteration: #{i}"
             return @pid
           rescue Mongo::ConnectionFailure
@@ -317,15 +318,15 @@ module Mongo
         cmd_servers.each do |cmd_server|
           debug 3, cmd_server.inspect
           cmd_server = cmd_server.config if cmd_server.is_a?(DbServer)
-          conn = Mongo::Connection.new(cmd_server[:host], cmd_server[:port])
+          client = Mongo::MongoClient.new(cmd_server[:host], cmd_server[:port])
           cmd.each do |c|
             debug 3,  "ClusterManager.command c:#{c.inspect}"
-            response = conn[db_name].command( c, opts )
+            response = client[db_name].command( c, opts )
             debug 3,  "ClusterManager.command response:#{response.inspect}"
             raise Mongo::OperationFailure, "c:#{c.inspect} opts:#{opts.inspect} failed" unless response["ok"] == 1.0 || opts.fetch(:check_response, true) == false
             ret << response
           end
-          conn.close
+          client.close
         end
         debug 3, "command ret:#{ret.inspect}"
         ret.size == 1 ? ret.first : ret
@@ -337,8 +338,8 @@ module Mongo
 
       def repl_set_get_config
         host, port = primary_name.split(":")
-        conn = Mongo::Connection.new(host, port)
-        conn['local']['system.replset'].find_one
+        client = Mongo::MongoClient.new(host, port)
+        client['local']['system.replset'].find_one
       end
 
       def repl_set_config
@@ -360,7 +361,9 @@ module Mongo
         60.times do |i|
           response = repl_set_get_status
           members = response['members']
-          return response if response['ok'] == 1.0 && members.collect{|m| m['state']}.all?{|state| [1,2,7].index(state)}
+          if response['ok'] == 1.0 && members.collect{|m| m['state']}.all?{|state| [1,2,7].index(state)}
+            return response if members.any?{|m| m['state'] == 1}
+          end
           sleep 1
         end
         raise Mongo::OperationFailure, "replSet startup failed - status: #{response.inspect}"
@@ -481,9 +484,9 @@ module Mongo
 
       def mongos_discover # can also do @config[:routers] find but only want mongos for connections
         (@config[:configs]).collect do |cmd_server|
-          conn = Mongo::Connection.new(cmd_server[:host], cmd_server[:port])
-          result = conn['config']['mongos'].find.to_a
-          conn.close
+          client = Mongo::MongoClient.new(cmd_server[:host], cmd_server[:port])
+          result = client['config']['mongos'].find.to_a
+          client.close
           result
         end
       end

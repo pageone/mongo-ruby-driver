@@ -8,17 +8,17 @@ class AuthenticationTest < Test::Unit::TestCase
   include Mongo
 
   def setup
-    @conn = standard_connection(:pool_size => 10)
-    @db1 = @conn.db('mongo-ruby-test-auth1')
-    @db2 = @conn.db('mongo-ruby-test-auth2')
-    @admin = @conn.db('admin')
+    @client = standard_connection(:pool_size => 10)
+    @db1 = @client.db('mongo-ruby-test-auth1')
+    @db2 = @client.db('mongo-ruby-test-auth2')
+    @admin = @client.db('admin')
   end
 
   def teardown
     @db1.authenticate('user1', 'secret')
     @db2.authenticate('user2', 'secret')
-    @conn.drop_database('mongo-ruby-test-auth1')
-    @conn.drop_database('mongo-ruby-test-auth2')
+    @client.drop_database('mongo-ruby-test-auth1')
+    @client.drop_database('mongo-ruby-test-auth2')
   end
 
   def threaded_exec
@@ -43,13 +43,13 @@ class AuthenticationTest < Test::Unit::TestCase
 
     threaded_exec do
       assert_raise Mongo::OperationFailure do
-        @db1['stuff'].insert({:a => 2}, :safe => true)
+        @db1['stuff'].insert({:a => 2})
       end
     end
 
     threaded_exec do
       assert_raise Mongo::OperationFailure do
-        @db2['stuff'].insert({:a => 2}, :safe => true)
+        @db2['stuff'].insert({:a => 2})
       end
     end
 
@@ -57,11 +57,11 @@ class AuthenticationTest < Test::Unit::TestCase
     @db2.authenticate('user2', 'secret')
 
     threaded_exec do
-      assert @db1['stuff'].insert({:a => 2}, :safe => true)
+      assert @db1['stuff'].insert({:a => 2})
     end
 
     threaded_exec do
-      assert @db2['stuff'].insert({:a => 2}, :safe => true)
+      assert @db2['stuff'].insert({:a => 2})
     end
 
     puts "Please bounce the server."
@@ -74,24 +74,24 @@ class AuthenticationTest < Test::Unit::TestCase
     end
 
     threaded_exec do
-      assert @db1['stuff'].insert({:a => 2}, :safe => true)
+      assert @db1['stuff'].insert({:a => 2})
     end
 
     threaded_exec do
-      assert @db2['stuff'].insert({:a => 2}, :safe => true)
+      assert @db2['stuff'].insert({:a => 2})
     end
 
     @db1.logout
     threaded_exec do
       assert_raise Mongo::OperationFailure do
-        @db1['stuff'].insert({:a => 2}, :safe => true)
+        @db1['stuff'].insert({:a => 2})
       end
     end
 
     @db2.logout
     threaded_exec do
       assert_raise Mongo::OperationFailure do
-        assert @db2['stuff'].insert({:a => 2}, :safe => true)
+        assert @db2['stuff'].insert({:a => 2})
       end
     end
   end

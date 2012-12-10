@@ -1,7 +1,7 @@
 # encoding: UTF-8
 #
 # --
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ++
-
-require 'mongo/version'
 
 module Mongo
   ASCENDING   =  1
@@ -50,12 +48,12 @@ module Mongo
   end
 end
 
-require 'active_support/core_ext/hash/indifferent_access'
-
 require 'bson'
 
 require 'mongo/util/conversions'
 require 'mongo/util/support'
+require 'mongo/util/read_preference'
+require 'mongo/util/write_concern'
 require 'mongo/util/core_ext'
 require 'mongo/util/logging'
 require 'mongo/util/node'
@@ -65,20 +63,20 @@ require 'mongo/util/sharding_pool_manager'
 require 'mongo/util/server_version'
 require 'mongo/util/ssl_socket'
 require 'mongo/util/tcp_socket'
+require 'mongo/util/unix_socket'
 require 'mongo/util/uri_parser'
 
-require 'mongo/collection'
+
 require 'mongo/networking'
-require 'mongo/connection'
-require 'mongo/repl_set_connection'
-require 'mongo/sharded_connection'
+require 'mongo/mongo_client'
+require 'mongo/mongo_replica_set_client'
+require 'mongo/mongo_sharded_client'
+require 'mongo/legacy'
+require 'mongo/collection'
 require 'mongo/cursor'
 require 'mongo/db'
 require 'mongo/exceptions'
 require 'mongo/gridfs/grid_ext'
 require 'mongo/gridfs/grid'
 require 'mongo/gridfs/grid_io'
-if RUBY_PLATFORM =~ /java/
-  require 'mongo/gridfs/grid_io_fix'
-end
 require 'mongo/gridfs/grid_file_system'

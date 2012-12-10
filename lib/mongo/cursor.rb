@@ -1,6 +1,6 @@
 # encoding: UTF-8
 
-# Copyright (C) 2008-2011 10gen Inc.
+# Copyright (C) 2008-2012 10gen Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +39,6 @@ module Mongo
     # @core cursors constructor_details
     def initialize(collection, opts={})
       @cursor_id  = nil
-
       @db         = collection.db
       @collection = collection
       @connection = @db.connection
@@ -74,7 +73,7 @@ module Mongo
 
       @transformer = opts[:transformer]
       if value = opts[:read]
-        Mongo::Support.validate_read_preference(value)
+        Mongo::ReadPreference::validate(value)
       else
         value = collection.read_preference
       end
@@ -189,7 +188,7 @@ module Mongo
 
       command.merge!(BSON::OrderedHash["fields", @fields])
 
-      response = @db.command(command)
+      response = @db.command(command, :read => @read_preference, :comment => @comment)
       return response['n'].to_i if Mongo::Support.ok?(response)
       return 0 if response['errmsg'] == "ns missing"
       raise OperationFailure.new("Count failed: #{response['errmsg']}", response['code'], response)
@@ -211,9 +210,7 @@ module Mongo
     # @raise [InvalidSortValueError] if the specified order is invalid.
     def sort(order, direction=nil)
       check_modifiable
-
       order = [[order, direction]] unless direction.nil?
-
       @order = order
       self
     end
@@ -231,7 +228,6 @@ module Mongo
     def limit(number_to_return=nil)
       return @limit unless number_to_return
       check_modifiable
-
       @limit = number_to_return
       self
     end
@@ -257,7 +253,7 @@ module Mongo
     #
     # Note that the batch size will take effect only on queries
     # where the number to be returned is greater than 100.
-    # 
+    #
     # This can not override MongoDB's limit on the amount of data it will
     # return to the client. Depending on server version this can be 4-16mb.
     #
@@ -489,7 +485,7 @@ module Mongo
             Mongo::Constants::OP_QUERY, message, nil, sock, @command,
             nil, @options & OP_QUERY_EXHAUST != 0)
         rescue ConnectionFailure => ex
-          if tries < 3 && !@socket && (!@command || Mongo::Support.secondary_ok?(@selector))
+          if tries < 3 && !@socket && (!@command || Mongo::Support::secondary_ok?(@selector))
             @connection.unpin_pool(sock.pool) if sock
             @connection.refresh
             retry
@@ -538,7 +534,7 @@ module Mongo
       ensure
         checkin_socket(sock) unless @socket
       end
-      
+
       @returned += @n_received
       @cache += results
       close_cursor_if_query_complete
