@@ -13,9 +13,18 @@ module Mongo
     end
 
     def eql?(other)
-      other.is_a?(Node) && @address == other.address
+      (other.is_a?(Node) && @address == other.address)
     end
     alias :== :eql?
+
+    def =~(other)
+      if other.is_a?(String)
+        h, p = split_node(other)
+        h == @host && p == @port
+      else
+        false
+      end
+    end
 
     def host_string
       address
@@ -23,7 +32,8 @@ module Mongo
 
     def config
       connect unless connected?
-      @config || set_config
+      set_config unless @config || !connected?
+      @config
     end
 
     def inspect
@@ -35,7 +45,6 @@ module Mongo
     # return nil.
     def connect
       @node_mutex.synchronize do
-        return if connected?
         begin
           @socket = @client.socket_class.new(@host, @port,
             @client.op_timeout, @client.connect_timeout
@@ -57,7 +66,7 @@ module Mongo
     end
 
     def connected?
-      @socket != nil
+      @socket != nil && !@socket.closed?
     end
 
     def active?
@@ -74,7 +83,6 @@ module Mongo
     # matches with the name provided.
     def set_config
       @node_mutex.synchronize do
-        return unless connected?
         begin
           @config = @client['admin'].command({:ismaster => 1}, :socket => @socket)
 
@@ -82,8 +90,10 @@ module Mongo
             @client.log(:warn, "#{config['msg']}")
           end
 
-          check_set_membership(config)
-          check_set_name(config)
+          unless @client.mongos?
+            check_set_membership(@config)
+            check_set_name(@config)
+          end
         rescue ConnectionFailure, OperationFailure, OperationTimeout, SocketError, SystemCallError, IOError => ex
           @client.log(:warn, "Attempted connection to node #{host_string} raised " +
                               "#{ex.class}: #{ex.message}")
@@ -91,7 +101,6 @@ module Mongo
           close
         end
       end
-      @config
     end
 
     # Return a list of replica set nodes from the config.
@@ -100,6 +109,7 @@ module Mongo
       nodes = []
       nodes += config['hosts'] if config['hosts']
       nodes += config['passives'] if config['passives']
+      nodes += ["#{@host}:#{@port}"] if @client.mongos?
       nodes
     end
 
@@ -112,11 +122,11 @@ module Mongo
     end
 
     def primary?
-      config['ismaster'] == true || @config['ismaster'] == 1
+      config['ismaster'] == true || config['ismaster'] == 1
     end
 
     def secondary?
-      config['secondary'] == true || @config['secondary'] == 1
+      config['secondary'] == true || config['secondary'] == 1
     end
 
     def tags
@@ -132,15 +142,10 @@ module Mongo
     end
 
     def healthy?
-      return false unless config
-      if config.has_key?('secondary')
-        config['ismaster'] || config['secondary']
-      else
-        true
-      end
+      connected? && config
     end
 
-    private
+    protected
 
     def split_node(host_port)
       if host_port.is_a?(String)

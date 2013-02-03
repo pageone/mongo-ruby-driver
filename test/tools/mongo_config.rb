@@ -102,7 +102,7 @@ module Mongo
       noprealloc = opts[:noprealloc] || true
       smallfiles = opts[:smallfiles] || true
       quiet      = opts[:quiet]      || true
-      fast_sync  = opts[:fastsync]   || true
+      fast_sync  = opts[:fastsync]   || false
 
       params.merge(
         :command => mongod,
@@ -145,6 +145,7 @@ module Mongo
     def self.port_available?(port)
       ret = false
       socket = Socket.new(Socket::Constants::AF_INET, Socket::Constants::SOCK_STREAM, 0)
+      socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_REUSEADDR, 1)
       sockaddr = Socket.sockaddr_in(port, '0.0.0.0')
       begin
         socket.bind(sockaddr)
@@ -188,8 +189,12 @@ module Mongo
         return @pid if running?
         begin
           # redirection not supported in jruby
-          @pid = Process.spawn(*@cmd)
-          sleep 1
+          if defined?(RUBY_ENGINE) && RUBY_ENGINE == 'jruby'
+            @pid = Process.spawn(*@cmd)
+          else
+            cmd_and_opts = [@cmd, {:out => :close}].flatten
+            @pid = Process.spawn(*cmd_and_opts)
+          end
           verify(verifies) if verifies > 0
           @pid
         end
@@ -205,6 +210,11 @@ module Mongo
           @pid && Process.kill(signal_no, @pid) && true
         rescue Errno::ESRCH
           false
+        end
+        # cleanup lock if unclean shutdown
+        begin
+          File.delete(File.join(@config[:dbpath], 'mongod.lock')) if @config[:dbpath]
+        rescue Errno::ENOENT
         end
       end
 
@@ -333,7 +343,7 @@ module Mongo
       end
 
       def repl_set_get_status
-        command( @config[:replicas].first, 'admin', { :replSetGetStatus => 1 }, {:check_response => false } )
+        command( @config[:replicas], 'admin', { :replSetGetStatus => 1 }, {:check_response => false } )
       end
 
       def repl_set_get_config
@@ -357,16 +367,27 @@ module Mongo
       end
 
       def repl_set_startup
-        response = nil
-        60.times do |i|
-          response = repl_set_get_status
-          members = response['members']
-          if response['ok'] == 1.0 && members.collect{|m| m['state']}.all?{|state| [1,2,7].index(state)}
-            return response if members.any?{|m| m['state'] == 1}
+        states = nil
+        60.times do
+          states = repl_set_get_status.zip(repl_set_is_master)
+          healthy = states.all? do |status, is_master|
+            members = status['members']
+            if status['ok'] == 1.0 && members.collect{|m| m['state']}.all?{|state| [1,2,7].index(state)}
+              members.any?{|m| m['state'] == 1} &&
+                case status['myState']
+                when 1
+                  is_master['ismaster'] == true && is_master['secondary'] == false
+                when 2
+                  is_master['ismaster'] == false && is_master['secondary'] == true
+                when 7
+                  is_master['ismaster'] == false && is_master['secondary'] == false
+                end
+            end
           end
-          sleep 1
+          return true if healthy
+          sleep(1)
         end
-        raise Mongo::OperationFailure, "replSet startup failed - status: #{response.inspect}"
+        raise Mongo::OperationFailure, "replSet startup failed - status: #{states.inspect}"
       end
 
       def repl_set_seeds
@@ -377,13 +398,17 @@ module Mongo
         @config[:replicas].collect{|node| [node[:host], node[:port]]}
       end
 
+      def repl_set_seeds_uri
+        repl_set_seeds.join(',')
+      end
+
       def repl_set_name
         @config[:replicas].first[:replSet]
       end
 
       def member_names_by_state(state)
         states = Array(state)
-        status = repl_set_get_status
+        status = repl_set_get_status.first
         status['members'].find_all{|member| states.index(member['state']) }.collect{|member| member['name']}
       end
 
@@ -415,6 +440,14 @@ module Mongo
 
       def secondaries
         members_by_name(secondary_names)
+      end
+
+      def kill_primary
+        primary.kill
+      end
+
+      def kill_secondary
+        secondaries[rand(secondaries.length)].kill
       end
 
       def replicas
@@ -462,8 +495,16 @@ module Mongo
         config_names_by_kind(:routers)
       end
 
-      def ismaster
-        command( @config[:routers], 'admin', { :ismaster => 1 } )
+      def ismaster(servers)
+        command( servers, 'admin', { :ismaster => 1 } )
+      end
+
+      def sharded_cluster_is_master
+        ismaster(@config[:routers])
+      end
+
+      def repl_set_is_master
+        ismaster(@config[:replicas])
       end
 
       def addshards(shards = @config[:shards])
@@ -497,7 +538,7 @@ module Mongo
         servers.each{|server| server.start}
         # TODO - sharded replica sets - pending
         if @config[:replicas]
-          repl_set_initiate if repl_set_get_status['startupStatus'] == 3
+          repl_set_initiate if repl_set_get_status.first['startupStatus'] == 3
           repl_set_startup
         end
         if @config[:routers]

@@ -39,19 +39,19 @@ namespace :deploy do
     g.add(['VERSION', 'ext/cbson/version.h'])
     g.commit "RELEASE #{bumper_version}"
     g.add_tag("#{bumper_version}")
-
     g.push('origin', 'master', true)
+
+    g.checkout('release')
+    g.pull('origin', 'master')
     g.push('origin', 'release', true)
   end
 
-  desc "Package all gems for release"
+  desc "Package all gems for release (Run from MRI)"
   task :package do
-    # TODO: Make this work for rbenv too
-    version = bumper_version.to_s
     RVM.use 'jruby'
-    system "gem build bson.gemspec; mv bson-#{version}.gem bson-java-#{version}.gem"
-    RVM.reset_current!
+    system "gem build bson.gemspec"
 
+    RVM.reset_current!
     Dir.glob('*.gemspec').each { |file| system "gem build #{file}" }
   end
 

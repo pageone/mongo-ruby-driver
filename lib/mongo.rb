@@ -1,21 +1,3 @@
-# encoding: UTF-8
-#
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 module Mongo
   ASCENDING   =  1
   DESCENDING  = -1
@@ -23,6 +5,7 @@ module Mongo
   GEOHAYSTACK = 'geoHaystack'
 
   DEFAULT_MAX_BSON_SIZE = 4 * 1024 * 1024
+  DEFAULT_MAX_MESSAGE_SIZE = DEFAULT_MAX_BSON_SIZE * 2
 
   module Constants
     OP_REPLY        = 1
@@ -50,6 +33,7 @@ end
 
 require 'bson'
 
+require 'mongo/util/thread_local_variable_manager'
 require 'mongo/util/conversions'
 require 'mongo/util/support'
 require 'mongo/util/read_preference'

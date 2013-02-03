@@ -330,7 +330,7 @@ class DBAPITest < Test::Unit::TestCase
     @@db.create_collection('foobar')
 
     coll = @@db.create_collection('foobar')
-    assert_equal true, coll.safe
+    assert_equal true, Mongo::WriteConcern.gle?(coll.write_concern)
   end
 
 
@@ -404,8 +404,9 @@ class DBAPITest < Test::Unit::TestCase
 
     test.insert("hello" => "world")
     test.insert("hello" => "mike")
-    test.insert("hello" => "world")
-    assert @@db.error?
+    assert_raise OperationFailure do
+      test.insert("hello" => "world")
+    end
   end
 
   def test_index_on_subfield
@@ -423,8 +424,9 @@ class DBAPITest < Test::Unit::TestCase
 
     test.insert("hello" => {"a" => 4, "b" => 5})
     test.insert("hello" => {"a" => 7, "b" => 2})
-    test.insert("hello" => {"a" => 4, "b" => 10})
-    assert @@db.error?
+    assert_raise OperationFailure do
+      test.insert("hello" => {"a" => 4, "b" => 10} )
+    end
   end
 
   def test_array
@@ -570,6 +572,17 @@ HERE
       assert_equal 1, @@coll.find('a' => 1).to_a.size
     ensure
       @@coll.drop_index(name)
+    end
+  end
+
+  def test_named_hint
+    name = @@coll.create_index('a', :name => 'named_index')
+    begin
+      assert_nil @@coll.hint
+      assert_equal 1, @@coll.find({'a' => 1}, :named_hint => 'named_index').to_a.size
+      assert_equal 1, @@coll.find({'a' => 1}, :hint => 'a', :named_hint => "bad_hint").to_a.size
+    ensure
+      @@coll.drop_index('named_index')
     end
   end
 
@@ -766,24 +779,26 @@ HERE
 
   def test_encodings
     if RUBY_VERSION >= '1.9'
-      ascii = "hello world"
+      default = "hello world"
       utf8 = "hello world".encode("UTF-8")
       iso8859 = "hello world".encode("ISO-8859-1")
 
       if RUBY_PLATFORM =~ /jruby/
-        assert_equal "ASCII-8BIT", ascii.encoding.name
+        assert_equal "ASCII-8BIT", default.encoding.name
+      elsif RUBY_VERSION >= '2.0'
+        assert_equal "UTF-8", default.encoding.name
       else
-        assert_equal "US-ASCII", ascii.encoding.name
+        assert_equal "US-ASCII", default.encoding.name
       end
 
       assert_equal "UTF-8", utf8.encoding.name
       assert_equal "ISO-8859-1", iso8859.encoding.name
 
       @@coll.remove
-      @@coll.save("ascii" => ascii, "utf8" => utf8, "iso8859" => iso8859)
+      @@coll.save("default" => default, "utf8" => utf8, "iso8859" => iso8859)
       doc = @@coll.find_one()
 
-      assert_equal "UTF-8", doc["ascii"].encoding.name
+      assert_equal "UTF-8", doc["default"].encoding.name
       assert_equal "UTF-8", doc["utf8"].encoding.name
       assert_equal "UTF-8", doc["iso8859"].encoding.name
     end

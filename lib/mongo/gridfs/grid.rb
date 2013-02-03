@@ -1,21 +1,3 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 module Mongo
 
   # Implementation of the MongoDB GridFS specification. A file store.
@@ -38,11 +20,11 @@ module Mongo
       @chunks  = @db["#{fs_name}.chunks"]
       @fs_name = fs_name
 
-      # Create indexes only if we're connected to a primary node.
+      # This will create indexes only if we're connected to a primary node.
       connection = @db.connection
-      if (connection.class == MongoClient && connection.read_primary?) ||
-          (connection.class == MongoReplicaSetClient && connection.primary)
-        @chunks.create_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
+      begin
+        @chunks.ensure_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
+      rescue Mongo::ConnectionFailure
       end
     end
 
@@ -70,13 +52,20 @@ module Mongo
     #
     # @return [BSON::ObjectId] the file's id.
     def put(data, opts={})
-      opts     = opts.dup
-      filename = opts.delete(:filename)
-      opts.merge!(default_grid_io_opts)
-      file = GridIO.new(@files, @chunks, filename, 'w', opts)
-      file.write(data)
-      file.close  
-      file.files_id
+      begin
+        # Ensure there is an index on files_id and n, as state may have changed since instantiation of self.
+        # Recall that index definitions are cached with ensure_index so this statement won't unneccesarily repeat index creation.
+        @chunks.ensure_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
+        opts     = opts.dup
+        filename = opts.delete(:filename)
+        opts.merge!(default_grid_io_opts)
+        file = GridIO.new(@files, @chunks, filename, 'w', opts)
+        file.write(data)
+        file.close
+        file.files_id
+      rescue Mongo::ConnectionFailure => e
+        raise e, "Failed to create necessary index and write data."
+      end
     end
 
     # Read a file from the file store.

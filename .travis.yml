@@ -3,12 +3,15 @@ language: ruby
 rvm:
   - 1.8.7
   - 1.9.3
+  - jruby
   - ruby-head
   - jruby-head
 
 bundler_args: --without deploy
 
-script: bundle exec rake test:ruby
+env: TRAVIS_TEST="true"
+
+script: bundle exec rake test
 
 notifications:
   email: false

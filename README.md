@@ -97,30 +97,14 @@ you can install it as a gem from the source by typing:
 
 For extensive examples, see the [MongoDB Ruby Tutorial](https://github.com/mongodb/mongo-ruby-driver/wiki/Tutorial).
 
-Bundled with the driver are many examples, located in the "docs/examples" subdirectory. Samples include using
-the driver and using the GridFS class GridStore. MongoDB must be running for
-these examples to work, of course.
-
-Here's how to start MongoDB and run the "simple.rb" example:
-
-      $ cd path/to/mongo
-      $ ./mongod run
-      ... then in another window ...
-      $ cd path/to/mongo-ruby-driver
-      $ ruby docs/examples/simple.rb
-
-See also the test code, especially test/test_db_api.rb.
-
 # GridFS
 
 The Ruby driver include two abstractions for storing large files: Grid and GridFileSystem.
-The Grid class is a Ruby implementation of MongoDB's GridFS file storage
-specification. GridFileSystem is essentially the same, but provides a more filesystem-like API
-and assumes that filenames are unique.
 
-An instance of both classes represents an individual file store. See the API reference
-for details, and see examples/gridfs.rb for code that uses many of the Grid
-features (metadata, content type, seek, tell, etc).
+The Grid class is a Ruby implementation of MongoDB's GridFS file storage
+specification. GridFileSystem is essentially the same, but provides a more filesystem-like API and assumes that filenames are unique.
+
+An instance of both classes represents an individual file store. See the API reference for details.
 
 Examples:
 
@@ -302,26 +286,22 @@ Before running the tests, make sure you install all test dependencies by running
 
     $ gem install bundler; bundle install
 
-To run all default test suites, just type:
+To run all default test suites (without the BSON extensions) just type:
 
     $ rake test
 
-If you have the source code, you can run the tests.  Skip this test with the C extension if you're running JRuby.
+If you want to run the default test suite using the BSON extensions:
 
-    $ rake test:c
-
-If you want to test the basic Ruby encoder, without the C extension, or if you're running JRuby:
-
-    $ rake test:ruby
+    $ rake test:ext
 
 These will run both unit and functional tests. To run these tests alone:
 
     $ rake test:unit
     $ rake test:functional
 
-To run any individual rake tasks with the C extension enabled, just pass C_EXT=true to the task (don't do this with JRuby):
+To run any individual rake tasks with the BSON extension disabled, just pass BSON_EXT_DISABLED=true to the task:
 
-    $ rake test:unit C_EXT=true
+    $ rake test:unit BSON_EXT_DISABLED=true
 
 If you want to test replica set, you can run the following task:
 
@@ -354,7 +334,7 @@ See [credits](https://github.com/mongodb/mongo-ruby-driver/wiki/Credits).
 
 # License
 
- Copyright 2008-2010 10gen Inc.
+ Copyright (C) 2008-2013 10gen Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.

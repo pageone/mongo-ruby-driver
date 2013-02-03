@@ -1,18 +1,22 @@
 require 'test_helper'
 
 class CursorTest < Test::Unit::TestCase
+  class Mongo::Cursor
+    public :construct_query_spec
+  end
+
   context "Cursor options" do
     setup do
       @logger     = mock()
       @logger.stubs(:debug)
       @connection = stub(:class => MongoClient, :logger => @logger,
-        :slave_ok? => false, :read_preference => :primary, :log_duration => false,
-        :tag_sets => {}, :acceptable_latency => 10)
+        :slave_ok? => false, :read => :primary, :log_duration => false,
+        :tag_sets => [], :acceptable_latency => 10)
       @db         = stub(:name => "testing", :slave_ok? => false,
-        :connection => @connection, :read_preference => :primary,
-        :tag_sets => {}, :acceptable_latency => 10)
-      @collection = stub(:db => @db, :name => "items", :read_preference => :primary,
-        :tag_sets => {}, :acceptable_latency => 10)
+        :connection => @connection, :read => :primary,
+        :tag_sets => [], :acceptable_latency => 10)
+      @collection = stub(:db => @db, :name => "items", :read => :primary,
+        :tag_sets => [], :acceptable_latency => 10)
       @cursor     = Cursor.new(@collection)
     end
 
@@ -107,6 +111,105 @@ class CursorTest < Test::Unit::TestCase
       @cursor.batch_size(100)
       assert_equal 100, @cursor.batch_size
     end
+
+    context "conected to mongos" do
+      setup do
+        @connection.stubs(:mongos?).returns(true)
+        @tag_sets = [{:dc => "ny"}]
+      end
+
+      should "set $readPreference" do
+        # secondary
+        cursor = Cursor.new(@collection, { :read => :secondary })
+
+        spec = cursor.construct_query_spec
+        assert spec.has_key?('$readPreference')
+        assert_equal :secondary, spec['$readPreference'][:mode]
+        assert !spec['$readPreference'].has_key?(:tags)
+
+        # secondary preferred with tags
+        cursor = Cursor.new(@collection, { :read => :secondary_preferred, :tag_sets => @tag_sets })
+
+        spec = cursor.construct_query_spec
+        assert spec.has_key?('$readPreference')
+        assert_equal :secondaryPreferred, spec['$readPreference'][:mode]
+        assert_equal @tag_sets, spec['$readPreference'][:tags]
+
+        # primary preferred
+        cursor = Cursor.new(@collection, { :read => :primary_preferred })
+
+        spec = cursor.construct_query_spec
+        assert spec.has_key?('$readPreference')
+        assert_equal :primaryPreferred, spec['$readPreference'][:mode]
+        assert !spec['$readPreference'].has_key?(:tags)
+
+        # primary preferred with tags
+        cursor = Cursor.new(@collection, { :read => :primary_preferred, :tag_sets => @tag_sets })
+
+        spec = cursor.construct_query_spec
+        assert spec.has_key?('$readPreference')
+        assert_equal :primaryPreferred, spec['$readPreference'][:mode]
+        assert_equal @tag_sets, spec['$readPreference'][:tags]
+
+        # nearest
+        cursor = Cursor.new(@collection, { :read => :nearest })
+
+        spec = cursor.construct_query_spec
+        assert spec.has_key?('$readPreference')
+        assert_equal :nearest, spec['$readPreference'][:mode]
+        assert !spec['$readPreference'].has_key?(:tags)
+
+        # nearest with tags
+        cursor = Cursor.new(@collection, { :read => :nearest, :tag_sets => @tag_sets })
+
+        spec = cursor.construct_query_spec
+        assert spec.has_key?('$readPreference')
+        assert_equal :nearest, spec['$readPreference'][:mode]
+        assert_equal @tag_sets, spec['$readPreference'][:tags]
+      end
+
+      should "not set $readPreference" do
+        # for primary
+        cursor = Cursor.new(@collection, { :read => :primary, :tag_sets => @tag_sets })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        # for secondary_preferred with no tags
+        cursor = Cursor.new(@collection, { :read => :secondary_preferred })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :secondary_preferred, :tag_sets => [] })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :secondary_preferred, :tag_sets => nil })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+      end
+    end
+
+    context "not conected to mongos" do
+      setup do
+        @connection.stubs(:mongos?).returns(false)
+      end
+
+      should "not set $readPreference" do
+        cursor = Cursor.new(@collection, { :read => :primary })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :primary_preferred })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :secondary })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :secondary_preferred })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :nearest })
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+
+        cursor = Cursor.new(@collection, { :read => :secondary , :tag_sets => @tag_sets})
+        assert !cursor.construct_query_spec.has_key?('$readPreference')
+      end
+    end
   end
 
   context "Query fields" do
@@ -117,7 +220,7 @@ class CursorTest < Test::Unit::TestCase
         :log_duration => false, :tag_sets =>{}, :acceptable_latency => 10)
       @db = stub(:slave_ok? => true, :name => "testing", :connection => @connection,
         :tag_sets => {}, :acceptable_latency => 10)
-      @collection = stub(:db => @db, :name => "items", :read_preference => :primary,
+      @collection = stub(:db => @db, :name => "items", :read => :primary,
         :tag_sets => {}, :acceptable_latency => 10)
     end
 
@@ -146,12 +249,12 @@ class CursorTest < Test::Unit::TestCase
       @logger     = mock()
       @logger.stubs(:debug)
       @connection = stub(:class => Connection, :logger => @logger,
-        :slave_ok? => false, :read_preference => :primary, :log_duration => false,
+        :slave_ok? => false, :read => :primary, :log_duration => false,
         :tag_sets => {}, :acceptable_latency => 10)
       @db         = stub(:name => "testing", :slave_ok? => false,
-        :connection => @connection, :read_preference => :primary,
+        :connection => @connection, :read => :primary,
         :tag_sets => {}, :acceptable_latency => 10)
-      @collection = stub(:db => @db, :name => "items", :read_preference => :primary,
+      @collection = stub(:db => @db, :name => "items", :read => :primary,
         :tag_sets => {}, :acceptable_latency => 10)
       @cursor     = Cursor.new(@collection)
     end

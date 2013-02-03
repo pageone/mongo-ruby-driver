@@ -1,21 +1,3 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 module Mongo
 
   # A file store built on the GridFS specification featuring
@@ -39,12 +21,12 @@ module Mongo
 
       @default_query_opts = {:sort => [['filename', 1], ['uploadDate', -1]], :limit => 1}
 
-      # Create indexes only if we're connected to a primary node.
+      # This will create indexes only if we're connected to a primary node.
       connection = @db.connection
-      if (connection.class == MongoClient && connection.read_primary?) ||
-          (connection.class == MongoReplicaSetClient && connection.primary)
-        @files.create_index([['filename', 1], ['uploadDate', -1]])
-        @chunks.create_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
+      begin
+        @files.ensure_index([['filename', 1], ['uploadDate', -1]])
+        @chunks.ensure_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
+      rescue Mongo::ConnectionFailure
       end
     end
 
@@ -104,9 +86,18 @@ module Mongo
       opts = opts.dup
       opts.merge!(default_grid_io_opts(filename))
       if mode == 'w'
-        versions = opts.delete(:versions)
-        if opts.delete(:delete_old) || (versions && versions < 1)
-          versions = 1
+        begin
+          # Ensure there are the appropriate indexes, as state may have changed since instantiation of self.
+          # Recall that index definitions are cached with ensure_index so this statement won't unneccesarily repeat index creation.
+          @files.ensure_index([['filename', 1], ['uploadDate', -1]])
+          @chunks.ensure_index([['files_id', Mongo::ASCENDING], ['n', Mongo::ASCENDING]], :unique => true)
+          versions = opts.delete(:versions)
+          if opts.delete(:delete_old) || (versions && versions < 1)
+            versions = 1
+          end
+        rescue Mongo::ConnectionFailure => e
+          raise e, "Failed to create necessary indexes and write data."
+          return
         end
       end
       file = GridIO.new(@files, @chunks, filename, mode, opts)

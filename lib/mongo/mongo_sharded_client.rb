@@ -1,27 +1,10 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 module Mongo
 
   # Instantiates and manages connections to a MongoDB sharded cluster for high availability.
   class MongoShardedClient < MongoReplicaSetClient
+    include ThreadLocalVariableManager
 
-    SHARDED_CLUSTER_OPTS = [:refresh_mode, :refresh_interval]
+    SHARDED_CLUSTER_OPTS = [:refresh_mode, :refresh_interval, :tag_sets, :read]
 
     attr_reader :seeds, :refresh_interval, :refresh_mode,
                 :refresh_version, :manager
@@ -58,7 +41,6 @@ module Mongo
 
       # No connection manager by default.
       @manager = nil
-      @old_managers = []
 
       # Lock for request ids.
       @id_lock = Mutex.new
@@ -71,6 +53,8 @@ module Mongo
 
       @connect_mutex = Mutex.new
       @refresh_mutex = Mutex.new
+
+      @mongos        = true
 
       check_opts(opts)
       setup(opts)
@@ -89,15 +73,26 @@ module Mongo
     def connect(force = !@connected)
       return unless force
       log(:info, "Connecting...")
+
+      # Prevent recursive connection attempts from the same thread.
+      # This is done rather than using a Monitor to prevent potentially recursing
+      # infinitely while attempting to connect and continually failing. Instead, fail fast.
+      raise ConnectionFailure, "Failed to get node data." if thread_local[:locks][:connecting]
+
       @connect_mutex.synchronize do
-        discovered_seeds = @manager ? @manager.seeds : []
-        @old_managers << @manager if @manager
-        @manager = ShardingPoolManager.new(self, discovered_seeds | @seeds)
+        begin
+          thread_local[:locks][:connecting] = true
+          if @manager
+            @manager.refresh! @seeds
+          else
+            @manager = ShardingPoolManager.new(self, @seeds)
+            thread_local[:managers][self] = @manager
+            @manager.connect
+          end
+        ensure
+          thread_local[:locks][:connecting] = false
+        end
 
-        Thread.current[:managers] ||= Hash.new
-        Thread.current[:managers][self] = @manager
-
-        @manager.connect
         @refresh_version += 1
         @last_refresh = Time.now
         @connected = true
@@ -132,53 +127,13 @@ module Mongo
     end
 
     def checkout(&block)
-      2.times do
-        if connected?
-          sync_refresh
-        else
-          connect
-        end
-
-        begin
-          socket = block.call
-        rescue => ex
-          checkin(socket) if socket
-          raise ex
-        end
-
-        if socket
-          return socket
-        else
-          @connected = false
-          #raise ConnectionFailure.new("Could not checkout a socket.")
-        end
+      tries = 0
+      begin
+        super(&block)
+      rescue ConnectionFailure
+        tries +=1
+        tries < 2 ? retry : raise
       end
     end
-
-    private
-
-    # Parse option hash
-    def setup(opts)
-      # Refresh
-      @refresh_mode = opts.fetch(:refresh_mode, false)
-      @refresh_interval = opts.fetch(:refresh_interval, 90)
-
-      if @refresh_mode && @refresh_interval < 60
-        @refresh_interval = 60 unless ENV['TEST_MODE'] = 'TRUE'
-      end
-
-      if @refresh_mode == :async
-        warn ":async refresh mode has been deprecated. Refresh
-        mode will be disabled."
-      elsif ![:sync, false].include?(@refresh_mode)
-        raise MongoArgumentError,
-          "Refresh mode must be either :sync or false."
-      end
-
-      opts[:connect_timeout] = opts[:connect_timeout] || 30
-
-      super opts
-    end
-
   end
 end

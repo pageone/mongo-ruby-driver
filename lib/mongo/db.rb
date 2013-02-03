@@ -1,21 +1,3 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 require 'socket'
 require 'thread'
 
@@ -55,7 +37,7 @@ module Mongo
     attr_accessor :cache_time
 
     # Read Preference
-    attr_accessor :read_preference, :tag_sets, :acceptable_latency
+    attr_accessor :read, :tag_sets, :acceptable_latency
 
     # Instances of DB are normally obtained by calling Mongo#db.
     #
@@ -94,12 +76,8 @@ module Mongo
 
       @write_concern = get_write_concern(opts, client)
 
-      if value = opts[:read]
-        Mongo::ReadPreference::validate(value)
-      else
-        value = @connection.read_preference
-      end
-      @read_preference = value.is_a?(Hash) ? value.dup : value
+      @read = opts[:read] || @connection.read
+      Mongo::ReadPreference::validate(@read)
       @tag_sets = opts.fetch(:tag_sets, @connection.tag_sets)
       @acceptable_latency = opts.fetch(:acceptable_latency, @connection.acceptable_latency)
       @cache_time = opts[:cache_time] || 300 #5 minutes.
@@ -510,10 +488,10 @@ module Mongo
     # hashes are ordered by default.
     #
     # @option opts [Boolean] :check_response (true) If +true+, raises an exception if the
-    # command fails.
+    #   command fails.
     # @option opts [Socket] :socket a socket to use for sending the command. This is mainly for internal use.
     # @option opts [:primary, :secondary] :read Read preference for this command. See Collection#find for
-    #  more details.
+    #   more details.
     # @option opts [String]  :comment (nil) a comment to include in profiling logs
     #
     # @return [Hash]
@@ -529,8 +507,8 @@ module Mongo
 
       if read_pref = opts[:read]
         Mongo::ReadPreference::validate(read_pref)
-        if read_pref != :primary && !Mongo::Support::secondary_ok?(selector)
-          raise Mongo.ArgumentError, "Command is not supported on secondaries: #{selector.keys.first}"
+        unless read_pref == :primary || Mongo::Support::secondary_ok?(selector)
+          raise MongoArgumentError, "Command is not supported on secondaries: #{selector.keys.first}"
         end
       end
 

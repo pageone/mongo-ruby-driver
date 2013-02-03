@@ -1,21 +1,3 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 require 'set'
 require 'socket'
 require 'thread'
@@ -31,14 +13,15 @@ module Mongo
     Mutex              = ::Mutex
     ConditionVariable  = ::ConditionVariable
 
-    DEFAULT_HOST       = 'localhost'
-    DEFAULT_PORT       = 27017
-    DEFAULT_DB_NAME    = 'test'
-    GENERIC_OPTS       = [:ssl, :auths, :logger, :connect]
-    TIMEOUT_OPTS       = [:timeout, :op_timeout, :connect_timeout]
-    POOL_OPTS          = [:pool_size, :pool_timeout]
-    WRITE_CONCERN_OPTS = [:w, :j, :fsync, :wtimeout]
-    CLIENT_ONLY_OPTS   = [:slave_ok]
+    DEFAULT_HOST         = 'localhost'
+    DEFAULT_PORT         = 27017
+    DEFAULT_DB_NAME      = 'test'
+    GENERIC_OPTS         = [:ssl, :auths, :logger, :connect]
+    TIMEOUT_OPTS         = [:timeout, :op_timeout, :connect_timeout]
+    POOL_OPTS            = [:pool_size, :pool_timeout]
+    READ_PREFERENCE_OPTS = [:read, :tag_sets, :secondary_acceptable_latency_ms]
+    WRITE_CONCERN_OPTS   = [:w, :j, :fsync, :wtimeout]
+    CLIENT_ONLY_OPTS     = [:slave_ok]
 
     mongo_thread_local_accessor :connections
 
@@ -55,7 +38,8 @@ module Mongo
                 :socket_class,
                 :op_timeout,
                 :tag_sets,
-                :acceptable_latency
+                :acceptable_latency,
+                :read
 
     # Create a connection to single MongoDB instance.
     #
@@ -126,22 +110,20 @@ module Mongo
       opts = args.last.is_a?(Hash) ? args.pop : {}
       @host, @port = parse_init(args[0], args[1], opts)
 
-      # Default maximum BSON object size
-      @max_bson_size = Mongo::DEFAULT_MAX_BSON_SIZE
-
       # Lock for request ids.
       @id_lock = Mutex.new
 
       # Connection pool for primary node
       @primary      = nil
       @primary_pool = nil
+      @mongos       = false
 
       # Not set for direct connection
-      @tag_sets = {}
+      @tag_sets = []
       @acceptable_latency = 15
 
       check_opts(opts)
-      setup(opts)
+      setup(opts.dup)
     end
 
     # DEPRECATED
@@ -441,6 +423,10 @@ module Mongo
       @slave_ok
     end
 
+    def mongos?
+      @mongos
+    end
+
     # Create a new socket and attempt to connect to master.
     # If successful, sets host and port to master and returns the socket.
     #
@@ -460,7 +446,12 @@ module Mongo
           @read_primary = false
         end
 
-        @max_bson_size = config['maxBsonObjectSize'] || Mongo::DEFAULT_MAX_BSON_SIZE
+        if config.has_key?('msg') && config['msg'] == 'isdbgrid'
+          @mongos = true
+        end
+
+        @max_bson_size = config['maxBsonObjectSize']
+        @max_message_size = config['maxMessageSizeBytes']
         set_primary(host_port)
       end
 
@@ -509,15 +500,6 @@ module Mongo
       @primary_pool
     end
 
-    # The value of the read preference.
-    def read_preference
-      if slave_ok?
-        :secondary_preferred
-      else
-        :primary
-      end
-    end
-
     # Close the connection to the database.
     def close
       @primary_pool.close if @primary_pool
@@ -530,7 +512,11 @@ module Mongo
     #
     # @return [Integer]
     def max_bson_size
-      @max_bson_size
+      @max_bson_size || DEFAULT_MAX_BSON_SIZE
+    end
+
+    def max_message_size
+      @max_message_size || DEFAULT_MAX_MESSAGE_SIZE
     end
 
     # Checkout a socket for reading (i.e., a secondary node).
@@ -561,6 +547,7 @@ module Mongo
       GENERIC_OPTS +
       CLIENT_ONLY_OPTS +
       POOL_OPTS +
+      READ_PREFERENCE_OPTS +
       WRITE_CONCERN_OPTS +
       TIMEOUT_OPTS
     end
@@ -575,7 +562,6 @@ module Mongo
 
     # Parse option hash
     def setup(opts)
-      # slave_ok can be true only if one node is specified
       @slave_ok = opts.delete(:slave_ok)
 
       @ssl = opts.delete(:ssl)
@@ -604,32 +590,32 @@ module Mongo
       @op_timeout = opts.delete(:op_timeout) || nil
 
       # Timeout on socket connect.
-      @connect_timeout = opts.delete(:connect_timeout) || nil
+      @connect_timeout = opts.delete(:connect_timeout) || 30
 
-      @logger = opts.fetch(:logger, nil)
-
-      # Connection level write concern options.
-      @write_concern = get_write_concern(opts)
+      @logger = opts.delete(:logger) || nil
 
       if @logger
         write_logging_startup_message
       end
 
-      if opts.fetch(:connect, true)
-        connect
+      # Determine read preference
+      if defined?(@slave_ok) && (@slave_ok) || defined?(@read_secondary) && @read_secondary
+        @read = :secondary_preferred
+      else
+        @read = opts.delete(:read) || :primary
       end
+      Mongo::ReadPreference::validate(@read)
+
+      @tag_sets = opts.delete(:tag_sets) || []
+      @acceptable_latency = opts.delete(:secondary_acceptable_latency_ms) || 15
+
+      # Connection level write concern options.
+      @write_concern = get_write_concern(opts)
+
+      connect if opts.fetch(:connect, true)
     end
 
     private
-
-    ## Methods for establishing a connection:
-
-    # If a ConnectionFailure is raised, this method will be called
-    # to close the connection and reset connection values.
-    # TODO: evaluate whether this method is actually necessary
-    def reset_connection
-      close
-    end
 
     def check_is_master(node)
       begin
@@ -637,8 +623,14 @@ module Mongo
         socket = nil
         config = nil
 
-        socket = @socket_class.new(host, port, @op_timeout, @connect_timeout) 
-        config = self['admin'].command({:ismaster => 1}, :socket => socket)
+        socket = @socket_class.new(host, port, @op_timeout, @connect_timeout)
+        if(@connect_timeout)
+          Timeout::timeout(@connect_timeout, OperationTimeout) do
+            config = self['admin'].command({:ismaster => 1}, :socket => socket)
+          end
+        else
+          config = self['admin'].command({:ismaster => 1}, :socket => socket)
+        end
       rescue OperationFailure, SocketError, SystemCallError, IOError
         close
       ensure

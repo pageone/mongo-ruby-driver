@@ -1,29 +1,33 @@
 # -*- mode: ruby; -*-
-require "rspec/core/rake_task"
+require 'rspec/core/rake_task'
 
 desc "Run the default test suite (Ruby)"
-task :test => 'test:ruby'
+task :test => ENV.key?('TRAVIS_TEST') ? 'test:default' : 'test:ruby'
 
 namespace :test do
   DEFAULT_TESTS = ['functional', 'unit', 'bson', 'threading']
   ENV['TEST_MODE'] = 'TRUE'
 
-  desc "Run default test suites with the BSON C-extension enabled."
-  task :c do
-    ENV['C_EXT'] = 'TRUE'
-    Rake::Task['compile:cbson'].invoke
-    Rake::Task['test:ruby'].invoke
-    ENV['C_EXT'] = nil
+  RSpec::Core::RakeTask.new(:spec)
+
+  desc "Run default test suites with BSON extensions enabled."
+  task :ext do
+    ENV.delete('BSON_EXT_DISABLED')
+    Rake::Task['compile'].invoke unless RUBY_PLATFORM =~ /java/
+    Rake::Task['test:default'].invoke
   end
 
-  RSpec::Core::RakeTask.new(:spec) do |spec|
-    spec.pattern = "spec/**/*_spec.rb"
+  desc "Runs default test suites in pure Ruby."
+  task :ruby do
+    ENV['BSON_EXT_DISABLED'] = 'TRUE'
+    Rake::Task['test:default'].invoke
+    ENV.delete('BSON_EXT_DISABLED')
   end
 
   desc "Runs default test suites"
-  task :ruby do
-    if RUBY_VERSION >= "1.9.0" && RUBY_ENGINE == 'ruby'
-      if ENV['COVERAGE']
+  task :default do
+    if RUBY_VERSION >= '1.9.0' && RUBY_ENGINE == 'ruby'
+      if ENV.key?('COVERAGE')
         require 'simplecov'
         SimpleCov.start do
           add_group "Mongo", 'lib/mongo'
@@ -55,8 +59,6 @@ namespace :test do
 
   Rake::TestTask.new(:functional) do |t|
     t.test_files = FileList['test/functional/*_test.rb'] - [
-      "test/functional/db_api_test.rb",
-      "test/functional/pool_test.rb",
       "test/functional/grid_io_test.rb",
       "test/functional/grid_test.rb"
     ]

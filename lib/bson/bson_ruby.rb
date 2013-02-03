@@ -1,58 +1,43 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 module BSON
+  NULL_BYTE = "\x00"
+
   # A BSON seralizer/deserializer in pure Ruby.
   class BSON_RUBY
-
-    DEFAULT_MAX_BSON_SIZE = 4 * 1024 * 1024
-
     @@max_bson_size = DEFAULT_MAX_BSON_SIZE
 
-    MINKEY = -1
-    EOO = 0
-    NUMBER = 1
-    STRING = 2
-    OBJECT = 3
-    ARRAY = 4
-    BINARY = 5
-    UNDEFINED = 6
-    OID = 7
-    BOOLEAN = 8
-    DATE = 9
-    NULL = 10
-    REGEX = 11
-    REF = 12
-    CODE = 13
-    SYMBOL = 14
+    MINKEY       = -1
+    EOO          = 0
+    NUMBER       = 1
+    STRING       = 2
+    OBJECT       = 3
+    ARRAY        = 4
+    BINARY       = 5
+    UNDEFINED    = 6
+    OID          = 7
+    BOOLEAN      = 8
+    DATE         = 9
+    NULL         = 10
+    REGEX        = 11
+    REF          = 12
+    CODE         = 13
+    SYMBOL       = 14
     CODE_W_SCOPE = 15
-    NUMBER_INT = 16
-    TIMESTAMP = 17
-    NUMBER_LONG = 18
-    MAXKEY = 127
+    NUMBER_INT   = 16
+    TIMESTAMP    = 17
+    NUMBER_LONG  = 18
+    MAXKEY       = 127
 
-    def initialize(max_bson_size=BSON::DEFAULT_MAX_BSON_SIZE)
+    INT32_MIN = -(1 << 31) + 1
+    INT32_MAX =  (1 << 31) - 1
+    INT64_MIN = -2**64 / 2
+    INT64_MAX =  2**64 / 2 - 1
+
+    def initialize(max_bson_size=DEFAULT_MAX_BSON_SIZE)
       @buf = ByteBuffer.new('', max_bson_size)
       @encoder = BSON_RUBY
     end
 
     if RUBY_VERSION >= '1.9'
-      NULL_BYTE       = "\0".force_encoding('binary').freeze
       UTF8_ENCODING   = Encoding.find('utf-8')
       BINARY_ENCODING = Encoding.find('binary')
 
@@ -65,8 +50,6 @@ module BSON
         str.dup.force_encoding(BINARY_ENCODING)
       end
     else
-      NULL_BYTE = "\0"
-
       def self.to_utf8_binary(str)
         begin
           str.unpack("U*")
@@ -107,7 +90,7 @@ module BSON
 
     # Serializes an object.
     # Implemented to ensure an API compatible with BSON extension.
-    def self.serialize(obj, check_keys=false, move_id=false, max_bson_size=BSON::DEFAULT_MAX_BSON_SIZE)
+    def self.serialize(obj, check_keys=false, move_id=false, max_bson_size=DEFAULT_MAX_BSON_SIZE)
       new(max_bson_size).serialize(obj, check_keys, move_id)
     end
 
@@ -141,7 +124,7 @@ module BSON
       serialize_eoo_element(@buf)
       if @buf.size > @buf.max_size
         raise InvalidDocument, "Document is too large (#{@buf.size}). " +
-         "This BSON documents is limited to #{@buf.max_size} bytes."
+         "This BSON document is limited to #{@buf.max_size} bytes."
       end
       @buf.put_int(@buf.size, 0)
       @buf
@@ -299,8 +282,7 @@ module BSON
     end
 
     def deserialize_date_data(buf)
-      unsigned = buf.get_long()
-      milliseconds = unsigned >= 2 ** 64 / 2 ? unsigned - 2**64 : unsigned
+      milliseconds = buf.get_long
       Time.at(milliseconds.to_f / 1000.0).utc # at() takes fractional seconds
     end
 
@@ -313,19 +295,17 @@ module BSON
     end
 
     def deserialize_number_int_data(buf)
-      unsigned = buf.get_int
-      unsigned >= 2**32 / 2 ? unsigned - 2**32 : unsigned
+      buf.get_int
     end
 
     def deserialize_number_long_data(buf)
-      unsigned = buf.get_long
-      unsigned >= 2 ** 64 / 2 ? unsigned - 2**64 : unsigned
+      buf.get_long
     end
 
     def deserialize_object_data(buf)
       size = buf.get_int
       buf.position -= 4
-      object = @encoder.new().deserialize(buf.get(size))
+      object = @encoder.new.deserialize(buf.get(size))
       if object.has_key? "$ref"
         DBRef.new(object["$ref"], object["$id"])
       else
@@ -387,7 +367,7 @@ module BSON
 
       scope_size = buf.get_int
       buf.position -= 4
-      scope = @encoder.new().deserialize(buf.get(scope_size))
+      scope = @encoder.new.deserialize(buf.get(scope_size))
 
       Code.new(encoded_str(code), scope)
     end
@@ -463,10 +443,10 @@ module BSON
         self.class.serialize_key(buf, key)
         buf.put_double(val)
       else
-        if val > 2**64 / 2 - 1 or val < -2**64 / 2
+        if val > INT64_MAX or val < INT64_MIN
           raise RangeError.new("MongoDB can only handle 8-byte ints")
         end
-        if val > 2**32 / 2 - 1 or val < -2**32 / 2
+        if val > INT32_MAX or val < INT32_MIN
           buf.put(NUMBER_LONG)
           self.class.serialize_key(buf, key)
           buf.put_long(val)

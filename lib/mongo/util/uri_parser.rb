@@ -1,21 +1,3 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 require 'cgi'
 
 module Mongo
@@ -40,6 +22,7 @@ module Mongo
       :connect,
       :replicaset,
       :slaveok,
+      :ssl,
       :safe,
       :w,
       :wtimeout,
@@ -54,6 +37,7 @@ module Mongo
     OPT_VALID  = {:connect          => lambda {|arg| ['direct', 'replicaset', 'true', 'false', true, false].include?(arg)},
                   :replicaset       => lambda {|arg| arg.length > 0},
                   :slaveok          => lambda {|arg| ['true', 'false'].include?(arg)},
+                  :ssl              => lambda {|arg| ['true', 'false'].include?(arg)},
                   :safe             => lambda {|arg| ['true', 'false'].include?(arg)},
                   :w                => lambda {|arg| arg =~ /^\w+$/ },
                   :wtimeout         => lambda {|arg| arg =~ /^\d+$/ },
@@ -68,6 +52,7 @@ module Mongo
     OPT_ERR    = {:connect          => "must be 'direct', 'replicaset', 'true', or 'false'",
                   :replicaset       => "must be a string containing the name of the replica set to connect to",
                   :slaveok          => "must be 'true' or 'false'",
+                  :ssl              => "must be 'true' or 'false'",
                   :safe             => "must be 'true' or 'false'",
                   :w                => "must be an integer indicating number of nodes to replicate to or a string specifying
                                         that replication is required to the majority or nodes with a particilar getLastErrorMode.",
@@ -83,6 +68,7 @@ module Mongo
     OPT_CONV   = {:connect          => lambda {|arg| arg == 'false' ? false : arg}, # be sure to convert 'false' to FalseClass
                   :replicaset       => lambda {|arg| arg},
                   :slaveok          => lambda {|arg| arg == 'true' ? true : false},
+                  :ssl              => lambda {|arg| arg == 'true' ? true : false},
                   :safe             => lambda {|arg| arg == 'true' ? true : false},
                   :w                => lambda {|arg| Mongo::Support.is_i?(arg) ? arg.to_i : arg.to_sym },
                   :wtimeout         => lambda {|arg| arg.to_i},
@@ -98,6 +84,7 @@ module Mongo
                 :connect,
                 :replicaset,
                 :slaveok,
+                :ssl,
                 :safe,
                 :w,
                 :wtimeout,
@@ -221,6 +208,8 @@ module Mongo
           opts[:read] = :secondary_preferred
         end
       end
+
+      opts[:ssl] = @ssl
 
       if direct?
         opts[:auths] = auths

@@ -1,35 +1,15 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ++
-
 module Mongo
 
   # Instantiates and manages connections to a MongoDB replica set.
   class MongoReplicaSetClient < MongoClient
+    include ThreadLocalVariableManager
 
     REPL_SET_OPTS = [
-      :read,
       :refresh_mode,
       :refresh_interval,
       :read_secondary,
       :rs_name,
-      :name,
-      :tag_sets,
-      :secondary_acceptable_latency_ms
+      :name
     ]
 
     attr_reader :replica_set_name,
@@ -37,9 +17,7 @@ module Mongo
                 :refresh_interval,
                 :refresh_mode,
                 :refresh_version,
-                :manager,
-                :tag_sets,
-                :acceptable_latency
+                :manager
 
     # Create a connection to a MongoDB replica set.
     #
@@ -63,7 +41,7 @@ module Mongo
     #       Write concern options are propagated to objects instantiated from this MongoReplicaSetClient.
     #       These defaults can be overridden upon instantiation of any object by explicitly setting an options hash
     #       on initialization.
-    #   @option opts [:primary, :primary_preferred, :secondary, :secondary_preferred, :nearest] :read_preference (:primary)
+    #   @option opts [:primary, :primary_preferred, :secondary, :secondary_preferred, :nearest] :read (:primary)
     #     A "read preference" determines the candidate replica set members to which a query or command can be sent.
     #     [:primary]
     #       * Read from primary only.
@@ -155,7 +133,6 @@ module Mongo
 
       # No connection manager by default.
       @manager = nil
-      @old_managers = []
 
       # Lock for request ids.
       @id_lock = Mutex.new
@@ -169,8 +146,10 @@ module Mongo
       @connect_mutex = Mutex.new
       @refresh_mutex = Mutex.new
 
+      @mongos = false
+
       check_opts(opts)
-      setup(opts)
+      setup(opts.dup)
     end
 
     def valid_opts
@@ -185,16 +164,26 @@ module Mongo
     # Initiate a connection to the replica set.
     def connect
       log(:info, "Connecting...")
+
+      # Prevent recursive connection attempts from the same thread.
+      # This is done rather than using a Monitor to prevent potentially recursing
+      # infinitely while attempting to connect and continually failing. Instead, fail fast.
+      raise ConnectionFailure, "Failed to get node data." if thread_local[:locks][:connecting] == true
+
       @connect_mutex.synchronize do
         return if @connected
-
-        seeds = @manager.nil? ? @seeds : @manager.seeds
-        @manager = PoolManager.new(self, seeds)
-
-        Thread.current[:managers] ||= Hash.new
-        Thread.current[:managers][self] = @manager
-
-        @manager.connect
+        begin
+          thread_local[:locks][:connecting] = true
+          if @manager
+            @manager.refresh! @seeds
+          else
+            @manager = PoolManager.new(self, @seeds)
+            thread_local[:managers][self] = @manager
+            @manager.connect
+          end
+        ensure
+          thread_local[:locks][:connecting] = false
+        end
         @refresh_version += 1
 
         if @manager.pools.empty?
@@ -238,15 +227,7 @@ module Mongo
     #   to get the refresh lock.
     def hard_refresh!
       log(:info, "Initiating hard refresh...")
-      discovered_seeds = @manager.seeds
-      new_manager = PoolManager.new(self, discovered_seeds | @seeds)
-      new_manager.connect
-
-      Thread.current[:managers][self] = new_manager
-
-      # TODO: make sure that connect has succeeded
-      @old_managers << @manager
-      @manager = new_manager
+      @manager.refresh! @seeds
 
       @refresh_version += 1
       return true
@@ -291,10 +272,6 @@ module Mongo
     end
     alias :primary? :read_primary?
 
-    def read_preference
-      @read
-    end
-
     # Close the connection to the database.
     def close(opts={})
       if opts[:soft]
@@ -304,9 +281,7 @@ module Mongo
       end
 
       # Clear the reference to this object.
-      if Thread.current[:managers]
-        Thread.current[:managers].delete(self)
-      end
+      thread_local[:managers].delete(self)
 
       @connected = false
     end
@@ -353,12 +328,11 @@ module Mongo
       end
 
       if socket
-        socket
+        return socket
       else
         @connected = false
         raise ConnectionFailure.new("Could not checkout a socket.")
       end
-      socket
     end
 
     def checkout_reader(mode=@read, tag_sets=@tag_sets, acceptable_latency=@acceptable_latency)
@@ -384,19 +358,15 @@ module Mongo
     end
 
     def ensure_manager
-      Thread.current[:managers] ||= Hash.new
-
-      if Thread.current[:managers][self] != @manager
-        Thread.current[:managers][self] = @manager
-      end
+      thread_local[:managers][self] = @manager
     end
 
     def pin_pool(pool)
-      @manager.pinned_pools[Thread.current] = pool if @manager
+      thread_local[:pinned_pools][@manager.object_id] = pool if @manager
     end
 
     def unpin_pool(pool)
-      @manager.pinned_pools[Thread.current] = nil if @manager
+      thread_local[:pinned_pools].delete @manager.object_id if @manager
     end
 
     def get_socket_from_pool(pool)
@@ -408,7 +378,7 @@ module Mongo
     end
 
     def local_manager
-      Thread.current[:managers][self] if Thread.current[:managers]
+      thread_local[:managers][self]
     end
 
     def arbiters
@@ -449,11 +419,13 @@ module Mongo
     end
 
     def max_bson_size
-      if local_manager && local_manager.max_bson_size
-        local_manager.max_bson_size
-      else
-        Mongo::DEFAULT_MAX_BSON_SIZE
-      end
+      return local_manager.max_bson_size if local_manager
+      DEFAULT_MAX_BSON_SIZE
+    end
+
+    def max_message_size
+      return local_manager.max_message_size if local_manager
+      DEFAULT_MAX_MESSAGE_SIZE
     end
 
     private
@@ -476,19 +448,11 @@ module Mongo
           "Refresh mode must be either :sync or false."
       end
 
-      # Determine read preference
       if opts[:read_secondary]
         warn ":read_secondary options has now been deprecated and will " +
           "be removed in driver v2.0. Use the :read option instead."
         @read_secondary = opts.delete(:read_secondary) || false
-        @read = :secondary_preferred
-      else
-        @read = opts.delete(:read) || :primary
-        Mongo::ReadPreference::validate(@read)
       end
-
-      @tag_sets = opts.delete(:tag_sets) || []
-      @acceptable_latency = opts.delete(:secondary_acceptable_latency_ms) || 15
 
       # Replica set name
       if opts[:rs_name]
@@ -499,21 +463,7 @@ module Mongo
         @replica_set_name = opts.delete(:name)
       end
 
-      opts[:connect_timeout] = opts.delete(:connect_timeout) || 30
-
       super opts
-    end
-
-    def prune_managers
-      @old_managers.each do |manager|
-        if manager != @manager
-          if manager.closed?
-            @old_managers.delete(manager)
-          else
-            manager.close(:soft => true)
-          end
-        end
-      end
     end
 
     def sync_refresh
@@ -525,7 +475,6 @@ module Mongo
         if @refresh_mutex.try_lock
           begin
             refresh
-            prune_managers
           ensure
             @refresh_mutex.unlock
           end

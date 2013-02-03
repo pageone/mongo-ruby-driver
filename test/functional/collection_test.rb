@@ -231,8 +231,8 @@ class TestCollection < Test::Unit::TestCase
     docs << {:bar => 1}
     invalid_docs = []
     invalid_docs << {"\223\372\226}" => 1} # non utf8 encoding
-    docs += invalid_docs 
-    
+    docs += invalid_docs
+
     assert_raise BSON::InvalidStringEncoding do
       @@test.insert(docs, :collect_on_error => false)
     end
@@ -244,14 +244,103 @@ class TestCollection < Test::Unit::TestCase
     assert_equal error_docs, invalid_docs
   end
 
+  def limited_collection
+    conn = standard_connection(:connect => false)
+    admin_db = Object.new
+    admin_db.expects(:command).returns({
+      'ok' => 1,
+      'ismaster' => 1,
+      'maxBsonObjectSize' => 1024,
+      'maxMessageSizeBytes' => 3 * 1024
+    })
+    conn.expects(:[]).with('admin').returns(admin_db)
+    conn.connect
+    return conn.db(MONGO_TEST_DB)["test"]
+  end
+
   def test_maximum_insert_size
     docs = []
-    16.times do
-      docs << {'foo' => 'a' * 1024 * 1024}
+    3.times do
+      docs << {'foo' => 'a' * 950}
+    end
+    assert_equal limited_collection.insert(docs).length, 3
+  end
+
+  def test_maximum_document_size
+    assert_raise InvalidDocument do
+      limited_collection.insert({'foo' => 'a' * 1024})
+    end
+  end
+
+  def test_maximum_message_size
+    docs = []
+    4.times do
+      docs << {'foo' => 'a' * 950}
     end
 
     assert_raise InvalidOperation do
-      @@test.insert(docs)
+      limited_collection.insert(docs)
+    end
+  end
+
+  def test_maximum_save_size
+    assert limited_collection.save({'foo' => 'a' * 950})
+    assert_raise InvalidDocument do
+      limited_collection.save({'foo' => 'a' * 1024})
+    end
+  end
+
+  def test_maximum_remove_size
+    assert limited_collection.remove({'foo' => 'a' * 950})
+    assert_raise InvalidDocument do
+      limited_collection.remove({'foo' => 'a' * 1024})
+    end
+  end
+
+  def test_maximum_update_size
+    assert_raise InvalidDocument do
+      limited_collection.update(
+        {'foo' => 'a' * 1024},
+        {'foo' => 'a' * 950}
+      )
+    end
+
+    assert_raise InvalidDocument do
+      limited_collection.update(
+        {'foo' => 'a' * 950},
+        {'foo' => 'a' * 1024}
+      )
+    end
+
+    assert_raise InvalidDocument do
+      limited_collection.update(
+        {'foo' => 'a' * 1024},
+        {'foo' => 'a' * 1024}
+      )
+    end
+
+    assert limited_collection.update(
+      {'foo' => 'a' * 950},
+      {'foo' => 'a' * 950}
+    )
+  end
+
+  def test_maximum_query_size
+    assert limited_collection.find({'foo' => 'a' * 950}).to_a
+    assert limited_collection.find(
+      {'foo' => 'a' * 950},
+      {:fields => {'foo' => 'a' * 950}}
+    ).to_a
+
+    assert_raise InvalidDocument do
+      limited_collection.find({'foo' => 'a' * 1024}).to_a
+    end
+
+    assert_raise InvalidDocument do
+      limited_collection.find(
+        {'foo' => 'a' * 950},
+        {:fields => {'foo' => 'a' * 1024}}
+      ).to_a
     end
   end
 
@@ -295,7 +384,7 @@ class TestCollection < Test::Unit::TestCase
     @@test.update({"x" => 1}, {"$set" => {"a.b" => 2}})
     assert_equal 2, @@test.find_one("x" => 1)["a"]["b"]
 
-    assert_raise_error BSON::InvalidKeyName, "key a.b must not contain '.'" do
+    assert_raise_error BSON::InvalidKeyName do
       @@test.update({"x" => 1}, {"a.b" => 3})
     end
   end
@@ -535,7 +624,7 @@ class TestCollection < Test::Unit::TestCase
     end
     assert c.closed?
   end
-  
+
   def setup_aggregate_data
     # save some data
     @@test.save( {
@@ -551,7 +640,7 @@ class TestCollection < Test::Unit::TestCase
             ],
         "other" => { "foo" => 5 }
         } )
-    
+
     @@test.save( {
          "_id" => 2,
          "title" => "this is your title", 
@@ -565,7 +654,7 @@ class TestCollection < Test::Unit::TestCase
          ],
           "other" => { "bar" => 14 }
         })
-        
+
     @@test.save( {
             "_id" => 3,
             "title" => "this is some other title", 
@@ -579,9 +668,9 @@ class TestCollection < Test::Unit::TestCase
             ],
             "other" => { "bar" => 14 }
         })
-    
+
   end
-  
+
   if @@version > '2.1.1'
     def test_reponds_to_aggregate
       assert_respond_to @@test, :aggregate
@@ -629,7 +718,7 @@ class TestCollection < Test::Unit::TestCase
       assert_equal 1, results.length
     end
 
-    def test_aggregate_pipeline_unwind                    
+    def test_aggregate_pipeline_unwind
       setup_aggregate_data
       desired_results = [ {"_id"=>1, "title"=>"this is my title", "author"=>"bob", "posted"=>Time.utc(2000),
                           "pageViews"=>5, "tags"=>"fun", "comments"=>[{"author"=>"joe", "text"=>"this is cool"}, 
@@ -742,11 +831,11 @@ class TestCollection < Test::Unit::TestCase
         @@test.map_reduce(m, r, :raw => true, :out => {:inline => 1})
         assert res["results"]
       end
-      
+
       def test_map_reduce_with_collection_output_to_other_db
         @@test << {:user_id => 1}
         @@test << {:user_id => 2}
-        
+
         m = Code.new("function() { emit(this.user_id, 1); }")
         r = Code.new("function(k,vals) { return 1; }")
         oh = BSON::OrderedHash.new
@@ -866,7 +955,7 @@ class TestCollection < Test::Unit::TestCase
     cursor      = @@test.find({}, :transformer => transformer)
     assert_equal(transformer, cursor.transformer)
   end
-  
+
   def test_find_one_with_transformer
     klass       = Struct.new(:id, :a)
     transformer = Proc.new { |doc| klass.new(doc['_id'], doc['a']) }
@@ -1048,7 +1137,7 @@ class TestCollection < Test::Unit::TestCase
       assert_equal 1, @collection.size
     end
   end
-  
+
   context "Drop index " do
     setup do
       @@db.drop_collection('test-collection')
@@ -1061,21 +1150,21 @@ class TestCollection < Test::Unit::TestCase
       @collection.drop_index([['a', Mongo::ASCENDING]])
       assert_nil @collection.index_information['a_1']
     end
-    
+
     should "drop an index which was given a specific name" do
       @collection.create_index([['a', Mongo::DESCENDING]], {:name => 'i_will_not_fear'})
       assert @collection.index_information['i_will_not_fear']
       @collection.drop_index([['a', Mongo::DESCENDING]])
       assert_nil @collection.index_information['i_will_not_fear']
     end
-  
+
     should "drops an composite index" do
       @collection.create_index([['a', Mongo::DESCENDING], ['b', Mongo::ASCENDING]])
       assert @collection.index_information['a_-1_b_1']
       @collection.drop_index([['a', Mongo::DESCENDING], ['b', Mongo::ASCENDING]])
       assert_nil @collection.index_information['a_-1_b_1']
     end
-    
+
     should "drops an index with symbols" do
       @collection.create_index([['a', Mongo::DESCENDING], [:b, Mongo::ASCENDING]])
       assert @collection.index_information['a_-1_b_1']

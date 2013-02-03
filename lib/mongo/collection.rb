@@ -1,20 +1,3 @@
-# encoding: UTF-8
-
-# --
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 module Mongo
 
   # A named collection of documents in a database.
@@ -29,7 +12,7 @@ module Mongo
                 :write_concern
 
     # Read Preference
-    attr_accessor :read_preference,
+    attr_accessor :read,
                   :tag_sets,
                   :acceptable_latency
 
@@ -107,12 +90,8 @@ module Mongo
       @cache      = Hash.new(0)
       unless pk_factory
         @write_concern = get_write_concern(opts, db)
-        if value = opts[:read]
-          Mongo::ReadPreference::validate(value)
-        else
-          value = @db.read_preference
-        end
-        @read_preference    = value.is_a?(Hash) ? value.dup : value
+        @read =  opts[:read] || @db.read
+        Mongo::ReadPreference::validate(@read)
         @tag_sets           = opts.fetch(:tag_sets, @db.tag_sets)
         @acceptable_latency = opts.fetch(:acceptable_latency, @db.acceptable_latency)
       end
@@ -159,6 +138,13 @@ module Mongo
       self
     end
 
+    # Set a hint field using a named index.
+    # @param [String] hinted index name
+    def named_hint=(hint=nil)
+      @hint = hint
+      self
+    end
+
     # Query the database.
     #
     # The +selector+ argument is a prototype document that all results must
@@ -197,6 +183,8 @@ module Mongo
     #   be specified as Mongo::ASCENDING (or :ascending / :asc) or Mongo::DESCENDING (or :descending / :desc)
     # @option opts [String, Array, OrderedHash] :hint hint for query optimizer, usually not necessary if
     #   using MongoDB > 1.1
+    # @option opts [String] :named_hint for specifying a named index as a hint, will be overriden by :hint
+    #   if :hint is also provided.
     # @option opts [Boolean] :snapshot (false) if true, snapshot mode will be used for this query.
     #   Snapshot mode assures no duplicates are returned, or objects missed, which were preset at both the start and
     #   end of the query's execution.
@@ -231,6 +219,7 @@ module Mongo
       limit              = opts.delete(:limit) || 0
       sort               = opts.delete(:sort)
       hint               = opts.delete(:hint)
+      named_hint         = opts.delete(:named_hint)
       snapshot           = opts.delete(:snapshot)
       batch_size         = opts.delete(:batch_size)
       timeout            = (opts.delete(:timeout) == false) ? false : true
@@ -239,7 +228,7 @@ module Mongo
       transformer        = opts.delete(:transformer)
       show_disk_loc      = opts.delete(:show_disk_loc)
       comment            = opts.delete(:comment)
-      read               = opts.delete(:read) || @read_preference
+      read               = opts.delete(:read) || @read
       tag_sets           = opts.delete(:tag_sets) || @tag_sets
       acceptable_latency = opts.delete(:acceptable_latency) || @acceptable_latency
 
@@ -261,7 +250,7 @@ module Mongo
         :skip               => skip,
         :limit              => limit,
         :order              => sort,
-        :hint               => hint,
+        :hint               => hint || named_hint,
         :snapshot           => snapshot,
         :timeout            => timeout,
         :batch_size         => batch_size,
@@ -420,7 +409,7 @@ module Mongo
     # @core remove remove-instance_method
     def remove(selector={}, opts={})
       write_concern = get_write_concern(opts, self)
-      message = BSON::ByteBuffer.new("\0\0\0\0")
+      message = BSON::ByteBuffer.new("\0\0\0\0", @connection.max_message_size)
       BSON::BSON_RUBY.serialize_cstr(message, "#{@db.name}.#{@name}")
       message.put_int(0)
       message.put_binary(BSON::BSON_CODER.serialize(selector, false, true, @connection.max_bson_size).to_s)
@@ -468,7 +457,7 @@ module Mongo
     def update(selector, document, opts={})
       # Initial byte is 0.
       write_concern = get_write_concern(opts, self)
-      message = BSON::ByteBuffer.new("\0\0\0\0")
+      message = BSON::ByteBuffer.new("\0\0\0\0", @connection.max_message_size)
       BSON::BSON_RUBY.serialize_cstr(message, "#{@db.name}.#{@name}")
       update_options  = 0
       update_options += 1 if opts[:upsert]
@@ -478,7 +467,7 @@ module Mongo
       check_keys = document.keys.first.to_s.start_with?("$") ? false : true
 
       message.put_int(update_options)
-      message.put_binary(BSON::BSON_CODER.serialize(selector, false, true).to_s)
+      message.put_binary(BSON::BSON_CODER.serialize(selector, false, true, @connection.max_bson_size).to_s)
       message.put_binary(BSON::BSON_CODER.serialize(document, check_keys, true, @connection.max_bson_size).to_s)
 
       instrument(:update, :database => @db.name, :collection => @name, :selector => selector, :document => document) do
@@ -981,12 +970,12 @@ module Mongo
     def command_options(opts)
       out = {}
 
-      if read_pref = opts[:read]
-        Mongo::ReadPreference::validate(read_pref)
+      if read = opts[:read]
+        Mongo::ReadPreference::validate(read)
       else
-        read_pref = read_preference
+        read = @read
       end
-      out[:read] = read_pref
+      out[:read] = read
       out[:comment] = opts[:comment] if opts[:comment]
       out
     end
@@ -1069,11 +1058,11 @@ module Mongo
     # Takes an array of +documents+, an optional +collection_name+, and a
     # +check_keys+ setting.
     def insert_documents(documents, collection_name=@name, check_keys=true, write_concern={}, flags={})
+      message = BSON::ByteBuffer.new("", @connection.max_message_size)
       if flags[:continue_on_error]
-        message = BSON::ByteBuffer.new
         message.put_int(1)
       else
-        message = BSON::ByteBuffer.new("\0\0\0\0")
+        message.put_int(0)
       end
 
       collect_on_error = !!flags[:collect_on_error]
@@ -1097,7 +1086,10 @@ module Mongo
             message.put_binary(BSON::BSON_CODER.serialize(doc, check_keys, true, @connection.max_bson_size).to_s)
           end
         end
-      raise InvalidOperation, "Exceded maximum insert size of 16,777,216 bytes" if message.size > @connection.max_bson_size
+
+      if message.size > @connection.max_message_size
+        raise InvalidOperation, "Exceded maximum insert size of #{@connection.max_message_size} bytes"
+      end
 
       instrument(:insert, :database => @db.name, :collection => collection_name, :documents => documents) do
         if Mongo::WriteConcern.gle?(write_concern)

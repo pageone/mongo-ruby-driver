@@ -1,19 +1,3 @@
-# encoding: UTF-8
-
-# Copyright (C) 2008-2012 10gen Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 module Mongo
 
   # A cursor over query results. Returned objects are hashes.
@@ -27,7 +11,7 @@ module Mongo
       :order, :hint, :snapshot, :timeout,
       :full_collection_name, :transformer,
       :options, :cursor_id, :show_disk_loc,
-      :comment
+      :comment, :read, :tag_sets
 
     # Create a new cursor.
     #
@@ -72,14 +56,10 @@ module Mongo
       @query_run    = false
 
       @transformer = opts[:transformer]
-      if value = opts[:read]
-        Mongo::ReadPreference::validate(value)
-      else
-        value = collection.read_preference
-      end
-      @read_preference = value.is_a?(Hash) ? value.dup : value
-      @tag_sets = opts.fetch(:tag_sets, @collection.tag_sets)
-      @acceptable_latency = opts.fetch(:acceptable_latency, @collection.acceptable_latency)
+      @read =  opts[:read] || @collection.read
+      Mongo::ReadPreference::validate(@read)
+      @tag_sets = opts[:tag_sets] || @collection.tag_sets
+      @acceptable_latency = opts[:acceptable_latency] || @collection.acceptable_latency
 
       batch_size(opts[:batch_size] || 0)
 
@@ -90,7 +70,7 @@ module Mongo
       if(!@timeout)
         add_option(OP_QUERY_NO_CURSOR_TIMEOUT)
       end
-      if(@read_preference != :primary)
+      if(@read != :primary)
         add_option(OP_QUERY_SLAVE_OK)
       end
       if(@tailable)
@@ -188,7 +168,7 @@ module Mongo
 
       command.merge!(BSON::OrderedHash["fields", @fields])
 
-      response = @db.command(command, :read => @read_preference, :comment => @comment)
+      response = @db.command(command, :read => @read, :comment => @comment)
       return response['n'].to_i if Mongo::Support.ok?(response)
       return 0 if response['errmsg'] == "ns missing"
       raise OperationFailure.new("Count failed: #{response['errmsg']}", response['code'], response)
@@ -201,7 +181,7 @@ module Mongo
     #
     # @param [Symbol, Array, Hash, OrderedHash] order either 1) a key to sort by 2)
     #   an array of [key, direction] pairs to sort by or 3) a hash of
-    #   field => direction pairs to sort by. Direction should be specified as 
+    #   field => direction pairs to sort by. Direction should be specified as
     #   Mongo::ASCENDING (or :ascending / :asc) or Mongo::DESCENDING
     #   (or :descending / :desc)
     #
@@ -406,7 +386,8 @@ module Mongo
     #
     # @return [Hash]
     def query_options_hash
-      { :selector => @selector,
+      BSON::OrderedHash[
+        :selector => @selector,
         :fields   => @fields,
         :skip     => @skip,
         :limit    => @limit,
@@ -417,7 +398,7 @@ module Mongo
         :max_scan => @max_scan,
         :return_key => @return_key,
         :show_disk_loc => @show_disk_loc,
-        :comment  => @comment }
+        :comment  => @comment ]
     end
 
     # Clean output for inspect.
@@ -471,26 +452,26 @@ module Mongo
     #
     # Upon ConnectionFailure, tries query 3 times if socket was not provided
     # and the query is either not a command or is a secondary_ok command.
-    # 
+    #
     # Pins pools upon successful read and unpins pool upon ConnectionFailure
     #
     def send_initial_query
       tries = 0
       instrument(:find, instrument_payload) do
         begin
-          tries += 1
           message = construct_query_message
           sock    = @socket || checkout_socket_from_connection
           results, @n_received, @cursor_id = @connection.receive_message(
             Mongo::Constants::OP_QUERY, message, nil, sock, @command,
             nil, @options & OP_QUERY_EXHAUST != 0)
         rescue ConnectionFailure => ex
+          @connection.unpin_pool(sock.pool) if sock
+          @connection.refresh
           if tries < 3 && !@socket && (!@command || Mongo::Support::secondary_ok?(@selector))
-            @connection.unpin_pool(sock.pool) if sock
-            @connection.refresh
+            tries += 1
             retry
           else
-            raise ex
+            raise
           end
         rescue OperationFailure, OperationTimeout => ex
           raise ex
@@ -545,7 +526,7 @@ module Mongo
         if @command && !Mongo::Support::secondary_ok?(@selector)
           @connection.checkout_reader(:primary)
         else
-          @connection.checkout_reader(@read_preference, @tag_sets, @acceptable_latency)
+          @connection.checkout_reader(@read, @tag_sets, @acceptable_latency)
         end
       rescue SystemStackError, NoMemoryError, SystemCallError => ex
         @connection.close
@@ -558,14 +539,14 @@ module Mongo
     end
 
     def construct_query_message
-      message = BSON::ByteBuffer.new
+      message = BSON::ByteBuffer.new("", @connection.max_message_size)
       message.put_int(@options)
       BSON::BSON_RUBY.serialize_cstr(message, "#{@db.name}.#{@collection.name}")
       message.put_int(@skip)
       message.put_int(@limit)
       spec = query_contains_special_fields? ? construct_query_spec : @selector
-      message.put_binary(BSON::BSON_CODER.serialize(spec, false).to_s)
-      message.put_binary(BSON::BSON_CODER.serialize(@fields, false).to_s) if @fields
+      message.put_binary(BSON::BSON_CODER.serialize(spec, false, false, @connection.max_bson_size).to_s)
+      message.put_binary(BSON::BSON_CODER.serialize(@fields, false, false, @connection.max_bson_size).to_s) if @fields
       message
     end
 
@@ -590,13 +571,16 @@ module Mongo
       spec['$returnKey']   = true if @return_key
       spec['$showDiskLoc'] = true if @show_disk_loc
       spec['$comment']  = @comment if @comment
+      if @connection.mongos? && @read != :primary
+        read_pref = Mongo::ReadPreference::mongos(@read, @tag_sets)
+        spec['$readPreference'] = read_pref if read_pref
+      end
       spec
     end
 
-    # Returns true if the query contains order, explain, hint, or snapshot.
     def query_contains_special_fields?
       @order || @explain || @hint || @snapshot || @show_disk_loc ||
-        @max_scan || @return_key || @comment
+        @max_scan || @return_key || @comment || @connection.mongos?
     end
 
     def close_cursor_if_query_complete

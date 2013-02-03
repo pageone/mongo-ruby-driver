@@ -1,11 +1,19 @@
 module Mongo
   class PoolManager
+    include Mongo::ReadPreference
+    include ThreadLocalVariableManager
 
-    attr_reader :client, :arbiters, :primary, :secondaries, :primary_pool,
-      :secondary_pool, :secondary_pools, :hosts, :nodes, :members, :seeds,
-      :max_bson_size
-
-    attr_accessor :pinned_pools
+    attr_reader :client,
+                :arbiters,
+                :primary,
+                :secondaries,
+                :primary_pool,
+                :secondary_pools,
+                :hosts,
+                :nodes,
+                :members,
+                :seeds,
+                :pools
 
     # Create a new set of connection pools.
     #
@@ -15,10 +23,17 @@ module Mongo
     # time. The union of these lists will be used when attempting to connect,
     # with the newly-discovered nodes being used first.
     def initialize(client, seeds=[])
-      @pinned_pools         = {}
       @client               = client
       @seeds                = seeds
-      @previously_connected = false
+
+      @pools                = Set.new
+      @primary              = nil
+      @primary_pool         = nil
+      @secondaries          = Set.new
+      @secondary_pools      = []
+      @hosts                = Set.new
+      @members              = Set.new
+      @refresh_required     = false
     end
 
     def inspect
@@ -26,15 +41,16 @@ module Mongo
     end
 
     def connect
-      close if @previously_connected
+      @refresh_required = false
+      disconnect_old_members
+      connect_to_members
+      initialize_pools(@members)
+      cache_discovered_seeds
+    end
 
-      initialize_data
-      members = connect_to_members
-      initialize_pools(members)
-      cache_discovered_seeds(members)
-
-      @members = members
-      @previously_connected = true
+    def refresh!(additional_seeds)
+      @seeds |= additional_seeds
+      connect
     end
 
     # We're healthy if all members are pingable and if the view
@@ -49,20 +65,19 @@ module Mongo
         return
       end
 
-      config = seed.set_config
-      if !config
+      if !seed.config
         @refresh_required = true
         seed.close
         return
       end
 
-      if config['hosts'].length != @members.length
+      if seed.config['hosts'].length != @members.length
         @refresh_required = true
         seed.close
         return
       end
 
-      config['hosts'].each do |host|
+      seed.config['hosts'].each do |host|
         member = @members.detect do |m|
           m.address == host
         end
@@ -99,29 +114,16 @@ module Mongo
       read_pool.host_port
     end
 
-    def read_pool(mode=@client.read_preference,
+    def read_pool(mode=@client.read,
                   tags=@client.tag_sets,
                   acceptable_latency=@client.acceptable_latency)
-      if mode == :primary && !tags.empty?
-        raise MongoArgumentError, "Read preferecy :primary cannot be combined with tags"
-      end
 
-      pinned = @pinned_pools[Thread.current]
+      pinned = thread_local[:pinned_pools][self.object_id]
+
       if pinned && pinned.matches_mode(mode) && pinned.matches_tag_sets(tags) && pinned.up?
         pool = pinned
       else
-        pool = case mode
-        when :primary
-          @primary_pool
-        when :primary_preferred
-          @primary_pool || select_pool(@secondary_pools, tags, acceptable_latency)
-        when :secondary
-          select_pool(@secondary_pools, tags, acceptable_latency)
-        when :secondary_preferred
-          select_pool(@secondary_pools, tags, acceptable_latency) || @primary_pool
-        when :nearest
-          select_pool(pools, tags, acceptable_latency)
-        end
+        pool = select_pool(mode, tags, acceptable_latency)
       end
 
       unless pool
@@ -132,15 +134,18 @@ module Mongo
       pool
     end
 
-    def pools
-      [@primary_pool, *@secondary_pools].compact
+    def max_bson_size
+      @max_bson_size ||= config_min('maxBsonObjectSize', DEFAULT_MAX_BSON_SIZE)
+    end
+
+    def max_message_size
+      @max_message_size ||= config_min('maxMessageSizeBytes', DEFAULT_MAX_MESSAGE_SIZE)
     end
 
     private
 
     def validate_existing_member(member)
-      config = member.set_config
-      if !config
+      if !member.config
         return false
       else
         if member.primary?
@@ -158,106 +163,100 @@ module Mongo
       end
     end
 
-    def initialize_data
-      @primary          = nil
-      @primary_pool     = nil
-      @read             = nil
-      @read_pool        = nil
-      @arbiters         = []
-      @secondaries      = []
-      @secondary_pool   = nil
-      @secondary_pools  = []
-      @hosts            = Set.new
-      @members          = Set.new
-      @refresh_required = false
-      @pinned_pools     = {}
+    # For any existing members, close and remove any that are unhealthy or already closed.
+    def disconnect_old_members
+      @pools.reject!   {|pool| !pool.healthy? }
+      @members.reject! {|node| !node.healthy? }
     end
 
     # Connect to each member of the replica set
-    # as reported by the given seed node, and return
-    # as a list of Mongo::Node objects.
+    # as reported by the given seed node.
     def connect_to_members
-      members = []
-
       seed = get_valid_seed_node
-
       seed.node_list.each do |host|
-        node = Mongo::Node.new(self.client, host)
-        if node.healthy?
-          members << node
+        if existing = @members.detect {|node| node =~ host }
+          if existing.healthy?
+            # Refresh this node's configuration
+            existing.set_config
+            # If we are unhealthy after refreshing our config, drop from the set.
+            if !existing.healthy?
+              @members.delete existing
+            else
+              next
+            end
+          else
+            existing.close
+            @members.delete existing
+          end
         end
+
+        node = Mongo::Node.new(self.client, host)
+        node.connect
+        @members << node if node.healthy?
       end
       seed.close
 
-      if members.empty?
+      if @members.empty?
         raise ConnectionFailure, "Failed to connect to any given member."
       end
-
-      members
     end
 
     # Initialize the connection pools for the primary and secondary nodes.
     def initialize_pools(members)
+      @primary_pool = nil
+      @primary = nil
+      @secondaries.clear
+      @secondary_pools.clear
+      @hosts.clear
+
       members.each do |member|
+        member.last_state = nil
         @hosts << member.host_string
         if member.primary?
           assign_primary(member)
-        elsif member.secondary? && !@secondaries.include?(member.host_port)
+        elsif member.secondary?
+          # member could be not primary but secondary still is false
           assign_secondary(member)
         end
       end
 
-      @max_bson_size = members.first.config['maxBsonObjectSize'] ||
-        Mongo::DEFAULT_MAX_BSON_SIZE
       @arbiters = members.first.arbiters
+    end
+
+    def config_min(attribute, default)
+      @members.reject {|m| !m.config[attribute]}
+      @members.map {|m| m.config[attribute]}.min || default
     end
 
     def assign_primary(member)
       member.last_state = :primary
       @primary = member.host_port
-      @primary_pool = Pool.new(self.client, member.host, member.port,
-        :size => self.client.pool_size,
-        :timeout => self.client.pool_timeout,
-        :node => member
-      )
+      if existing = @pools.detect {|pool| pool.node == member }
+        @primary_pool = existing
+      else
+        @primary_pool = Pool.new(self.client, member.host, member.port,
+          :size => self.client.pool_size,
+          :timeout => self.client.pool_timeout,
+          :node => member
+        )
+        @pools << @primary_pool
+      end
     end
 
     def assign_secondary(member)
       member.last_state = :secondary
       @secondaries << member.host_port
-      pool = Pool.new(self.client, member.host, member.port,
-        :size => self.client.pool_size,
-        :timeout => self.client.pool_timeout,
-        :node => member
-      )
-      @secondary_pools << pool
-    end
-
-    def select_pool(candidates, tag_sets, acceptable_latency)
-      tag_sets = [tag_sets] unless tag_sets.is_a?(Array)
-
-      if !tag_sets.empty?
-        matches = []
-        tag_sets.detect do |tag_set|
-          matches = candidates.select do |candidate|
-            tag_set.none? { |k,v| candidate.tags[k.to_s] != v } &&
-            candidate.ping_time
-          end
-          !matches.empty?
-        end
+      if existing = @pools.detect {|pool| pool.node == member }
+        @secondary_pools << existing
       else
-        matches = candidates
+        pool = Pool.new(self.client, member.host, member.port,
+          :size => self.client.pool_size,
+          :timeout => self.client.pool_timeout,
+          :node => member
+        )
+        @secondary_pools << pool
+        @pools << pool
       end
-
-      matches.empty? ? nil : near_pool(matches, acceptable_latency)
-    end
-
-    def near_pool(pool_set, acceptable_latency)
-      nearest_pool = pool_set.min_by { |pool| pool.ping_time }
-      near_pools = pool_set.select do |pool|
-        (pool.ping_time - nearest_pool.ping_time) <= acceptable_latency
-      end
-      near_pools[ rand(near_pools.length) ]
     end
 
     # Iterate through the list of provided seed
@@ -268,11 +267,8 @@ module Mongo
     def get_valid_seed_node
       @seeds.each do |seed|
         node = Mongo::Node.new(self.client, seed)
-        if !node.connect
-          next
-        elsif node.set_config && node.healthy?
-          return node
-        end
+        node.connect
+        return node if node.healthy?
       end
 
       raise ConnectionFailure, "Cannot connect to a replica set using seeds " +
@@ -281,8 +277,8 @@ module Mongo
 
     private
 
-    def cache_discovered_seeds(members)
-      @seeds = members.map { |n| n.host_port }
+    def cache_discovered_seeds
+      @seeds = @members.map &:host_port
     end
 
   end
